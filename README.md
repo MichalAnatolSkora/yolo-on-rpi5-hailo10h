@@ -74,39 +74,55 @@ Look for `Speed 8GT/s` which indicates Gen 3 is active (Gen 2 would show `5GT/s`
 
 ## Acquiring Hailo-10H YOLO Models (`.hef`)
 
-A major difference between standard AI Kits and the Hailo-10H is model format architecture. **Models compiled for Hailo-8 will NOT work on Hailo-10H.** You must use Hailo Executable Format (`.hef`) files specifically compiled for the Hailo-10 architecture.
+**Models compiled for Hailo-8 will NOT work on Hailo-10H.** You must use `.hef` files specifically compiled for the Hailo-10 architecture.
 
-1.  **Hailo Model Zoo:** Clone the [Hailo Model Zoo](https://github.com/hailo-ai/hailo_model_zoo) (use the `master` branch for Hailo-10H support).
-2.  **DF Compiler:** Use the Hailo Dataflow Compiler (via Docker or native install) to convert an ONNX YOLOv8 model (e.g., `yolov8n.onnx`) into a HEF targeting `hw_arch=hailo10h`.
+**Option A — Automated (YOLOv12):**
+```bash
+./install_yolo12.sh
+```
+This installs Ultralytics, exports YOLOv12n to ONNX, and compiles it to a Hailo-10H HEF. The script is idempotent — safe to re-run.
+
+**Option B — Manual:**
+1.  Clone the [Hailo Model Zoo](https://github.com/hailo-ai/hailo_model_zoo) (use the `master` branch for Hailo-10H support).
+2.  Use the Hailo Dataflow Compiler (via Docker or native install) to convert an ONNX model (e.g., `yolov8n.onnx`) into a HEF targeting `hw_arch=hailo10h`.
 
 ## Running Real-Time Inference (Camera)
 
 If you have a Raspberry Pi Camera connected, you can test YOLO object detection natively using `rpicam-apps` which comes pre-integrated with Hailo post-processing.
 
 ```bash
-# This uses a generic YOLOv8s JSON configuration. Ensure the pointed HEF file is compiled for Hailo-10H.
 rpicam-hello -t 0 --post-process-file /usr/share/rpi-camera-assets/hailo/yolov8s.json --info-text "Hailo-10H YOLO"
 ```
 
-*Note: You may need to edit `/usr/share/rpi-camera-assets/hailo/yolov8s.json` to point to the correct `.hef` file path that you compiled for Hailo-10H.*
+*Note: You may need to edit the JSON config to point to the correct `.hef` file path compiled for Hailo-10H.*
 
 ## Running Inference via Python
 
-You can use the provided `run_yolo.py` sample script as a starting point. It uses GStreamer, which allows seamless integration of camera fetching, Hailo inference, and drawing bounding boxes in a Python context without the complexity of raw C++ integration.
+Two inference scripts are provided:
+
+| Script | Backend | Best for |
+|---|---|---|
+| `run_yolo.py` | GStreamer pipeline | YOLOv8 with existing Hailo GStreamer post-process plugins |
+| `run_yolo12.py` | HailoRT Python API | YOLOv12 (or any model without a GStreamer .so) |
 
 **Install Python dependencies:**
 ```bash
 pip install -r requirements.txt
 ```
 
-**Run with Raspberry Pi Camera:**
+### YOLOv8 (GStreamer)
+
 ```bash
-python run_yolo.py --model ~/hailo_models/yolov8n.hef --labels coco.names
+python run_yolo.py --model ~/hailo_models/yolov8n.hef
+python run_yolo.py --model ~/hailo_models/yolov8n.hef --source /dev/video0  # USB camera
 ```
 
-**Run with a USB camera:**
+### YOLOv12 (HailoRT API)
+
 ```bash
-python run_yolo.py --model ~/hailo_models/yolov8n.hef --source /dev/video0
+python run_yolo12.py --model ~/hailo_models/yolov12n.hef
+python run_yolo12.py --model ~/hailo_models/yolov12n.hef --source /dev/video0  # USB camera
+python run_yolo12.py --model ~/hailo_models/yolov12n.hef --confidence 0.4 --iou 0.5
 ```
 
 To find your USB camera device path, run `ls /dev/video*` or `v4l2-ctl --list-devices`.
