@@ -185,6 +185,12 @@ Features:
 
 ## Troubleshooting
 
+Run the diagnostic script to identify issues:
+```bash
+./troubleshoot.sh
+```
+It checks PCIe detection, kernel driver, firmware, device availability, Python bindings, model files, and camera — with color-coded PASS/WARN/FAIL output.
+
 | Problem | Solution |
 |---|---|
 | `hailortcli` not found | Ensure `hailo-all` is installed and you've rebooted |
