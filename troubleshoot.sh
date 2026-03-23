@@ -150,8 +150,15 @@ if lsmod 2>/dev/null | grep -q hailo_pci; then
     DRIVER_LOADED=true
 else
     fail "hailo_pci kernel module is NOT loaded"
-    add_fix "Load hailo_pci kernel module" \
-            "sudo modprobe hailo_pci"
+    
+    if ! dpkg -s dkms &>/dev/null || [[ ! -e "/lib/modules/$(uname -r)/build" ]]; then
+        warn "DKMS or kernel headers are missing. The driver must be compiled for your current kernel ($(uname -r))."
+        add_fix "Install DKMS, kernel headers, and rebuild Hailo PCIe driver" \
+                "sudo apt update && sudo apt install -y dkms raspberrypi-kernel-headers && sudo apt install --reinstall -y hailort-pcie-driver && sudo modprobe hailo_pci"
+    else
+        add_fix "Load hailo_pci kernel module (or rebuild if it fails)" \
+                "sudo modprobe hailo_pci || (echo 'Failed to load. Rebuilding driver...' && sudo apt install --reinstall -y hailort-pcie-driver && sudo modprobe hailo_pci)"
+    fi
 fi
 
 if [[ -e /dev/hailo0 ]]; then
