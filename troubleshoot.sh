@@ -2,15 +2,21 @@
 
 # Hailo-10H diagnostic script for Raspberry Pi 5.
 # Checks hardware, driver, firmware, and runtime status.
+# Offers to run fix commands interactively.
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 PASS=0
 WARN=0
 FAIL=0
+
+# Collect suggested fixes to offer at the end
+FIXES=()
+FIX_CMDS=()
 
 pass() {
     echo -e "  ${GREEN}[PASS]${NC} $1"
@@ -29,6 +35,37 @@ fail() {
 
 info() {
     echo -e "  [INFO] $1"
+}
+
+# Register a fix: description and command
+add_fix() {
+    FIXES+=("$1")
+    FIX_CMDS+=("$2")
+}
+
+# Prompt user to run a command
+ask_and_run() {
+    local description="$1"
+    local cmd="$2"
+    echo ""
+    echo -e "  ${BOLD}Fix:${NC} $description"
+    echo -e "  ${BOLD}Command:${NC} $cmd"
+    echo -n "  Run this command? [y/N] "
+    read -r answer
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+        echo "  Running: $cmd"
+        eval "$cmd"
+        local exit_code=$?
+        if [[ $exit_code -eq 0 ]]; then
+            echo -e "  ${GREEN}Done.${NC}"
+        else
+            echo -e "  ${RED}Command exited with code $exit_code${NC}"
+        fi
+        return $exit_code
+    else
+        echo "  Skipped."
+        return 1
+    fi
 }
 
 echo "=========================================================="
@@ -73,7 +110,8 @@ if [[ -f "$PCIE_CONFIG" ]]; then
         warn "PCIe Gen 3 line found but may be commented out in $PCIE_CONFIG"
     else
         warn "PCIe Gen 3 not configured in $PCIE_CONFIG (using Gen 2 — lower bandwidth)"
-        info "Add 'dtparam=pciex1_gen=3' under [all] and reboot"
+        add_fix "Enable PCIe Gen 3 in boot config (requires reboot)" \
+                "sudo sh -c 'echo \"dtparam=pciex1_gen=3\" >> $PCIE_CONFIG'"
     fi
 else
     info "Config file not found at $PCIE_CONFIG"
@@ -98,7 +136,7 @@ if [[ -n "$HAILO_PCI" ]]; then
 else
     fail "No Hailo device found on PCIe bus"
     info "Check M.2 module seating, ribbon cable, and Hat+ power"
-    info "Try: power off (not reboot), reseat hardware, power on"
+    info "Power off (not reboot), reseat hardware, power on"
 fi
 
 echo ""
@@ -106,12 +144,14 @@ echo ""
 # --- 3. Kernel driver ---
 echo "--- Kernel Driver ---"
 
+DRIVER_LOADED=false
 if lsmod 2>/dev/null | grep -q hailo_pci; then
     pass "hailo_pci kernel module is loaded"
+    DRIVER_LOADED=true
 else
     fail "hailo_pci kernel module is NOT loaded"
-    info "Try: sudo modprobe hailo_pci"
-    info "If that fails, reinstall: sudo apt install --reinstall hailo-all"
+    add_fix "Load hailo_pci kernel module" \
+            "sudo modprobe hailo_pci"
 fi
 
 if [[ -e /dev/hailo0 ]]; then
@@ -124,12 +164,15 @@ if [[ -e /dev/hailo0 ]]; then
         fail "/dev/hailo0 permission denied for current user ($(whoami))"
         HAILO_GROUP=$(stat -c '%G' /dev/hailo0 2>/dev/null || stat -f '%Sg' /dev/hailo0 2>/dev/null)
         info "Device group: $HAILO_GROUP"
-        info "Try: sudo usermod -aG $HAILO_GROUP $(whoami) && logout/login"
+        add_fix "Add current user to $HAILO_GROUP group (requires logout/login)" \
+                "sudo usermod -aG $HAILO_GROUP $(whoami)"
     fi
 else
     fail "/dev/hailo0 does NOT exist"
     info "The kernel driver did not create the device node"
-    info "Check dmesg for errors: dmesg | grep -i hailo"
+    if [[ "$DRIVER_LOADED" == false ]]; then
+        info "Driver is not loaded — fix that first (see above)"
+    fi
 fi
 
 # Check dmesg for Hailo messages
@@ -157,7 +200,8 @@ if dpkg -s hailo-all &>/dev/null; then
     pass "hailo-all is installed (version: ${HAILO_VER:-unknown})"
 else
     fail "hailo-all is NOT installed"
-    info "Install with: sudo apt install hailo-all"
+    add_fix "Install hailo-all package" \
+            "sudo apt update && sudo apt install -y hailo-all"
 fi
 
 if command -v hailortcli &>/dev/null; then
@@ -171,7 +215,14 @@ if python3 -c "import hailo_platform" &>/dev/null; then
     pass "hailo_platform Python module is importable"
 else
     fail "hailo_platform Python module cannot be imported"
-    info "Ensure your venv uses --system-site-packages"
+    # Check if it exists in system but venv blocks it
+    if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+        info "You are in a virtual environment: $VIRTUAL_ENV"
+        add_fix "Recreate venv with system site-packages" \
+                "python3 -m venv --system-site-packages \"$VIRTUAL_ENV\" --clear"
+    else
+        info "Ensure hailo-all is installed (provides hailo_platform)"
+    fi
 fi
 
 echo ""
@@ -195,13 +246,18 @@ if [[ -e /dev/hailo0 ]] && command -v hailortcli &>/dev/null; then
         fi
     elif [[ $FW_EXIT -eq 124 ]]; then
         fail "Firmware identify timed out (10s)"
-        info "Device may be hung — try power cycling the Pi"
+        info "Device may be hung"
+        add_fix "Reload Hailo kernel driver" \
+                "sudo modprobe -r hailo_pci && sudo modprobe hailo_pci"
     else
         fail "Firmware identify failed (exit code: $FW_EXIT)"
         if [[ -n "$FW_OUTPUT" ]]; then
-            info "$FW_OUTPUT" | head -3
+            echo "$FW_OUTPUT" | head -3 | while IFS= read -r line; do
+                info "$line"
+            done
         fi
-        info "Try power cycling (not just rebooting) the Pi"
+        add_fix "Reload Hailo kernel driver" \
+                "sudo modprobe -r hailo_pci && sudo modprobe hailo_pci"
     fi
 else
     if [[ ! -e /dev/hailo0 ]]; then
@@ -231,18 +287,21 @@ except Exception as e:
         pass "VDevice opens successfully — ready for inference"
     elif echo "$DEVICE_CHECK" | grep -qi "OUT_OF_PHYSICAL_DEVICES\|status=74"; then
         fail "HAILO_OUT_OF_PHYSICAL_DEVICES — device is busy or unavailable"
-        info "Check if another process is using the Hailo device:"
+        info "Checking for processes using /dev/hailo0..."
         HAILO_PROCS=$(sudo lsof /dev/hailo0 2>/dev/null | tail -n +2)
         if [[ -n "$HAILO_PROCS" ]]; then
             info "Processes using /dev/hailo0:"
             echo "$HAILO_PROCS" | while IFS= read -r line; do
                 echo "    $line"
             done
-            info "Stop those processes or reboot to free the device"
+            # Extract PIDs
+            HAILO_PIDS=$(echo "$HAILO_PROCS" | awk '{print $2}' | sort -u | tr '\n' ' ')
+            add_fix "Kill processes holding Hailo device (PIDs: $HAILO_PIDS)" \
+                    "sudo kill $HAILO_PIDS"
         else
             info "No processes found holding /dev/hailo0"
-            info "Try: sudo modprobe -r hailo_pci && sudo modprobe hailo_pci"
-            info "Or power cycle the Pi"
+            add_fix "Reload Hailo kernel driver to reset device" \
+                    "sudo modprobe -r hailo_pci && sudo modprobe hailo_pci"
         fi
     else
         fail "VDevice failed: $DEVICE_CHECK"
@@ -267,10 +326,13 @@ if [[ -d "$MODEL_DIR" ]]; then
         done
     else
         warn "No .hef models found in $MODEL_DIR"
-        info "Run ./install_yolo12.sh to download a model"
+        add_fix "Download YOLOv12n model for Hailo-10H" \
+                "./install_yolo12.sh"
     fi
 else
     warn "Model directory $MODEL_DIR does not exist"
+    add_fix "Download YOLOv12n model for Hailo-10H" \
+            "./install_yolo12.sh"
 fi
 
 echo ""
@@ -297,16 +359,86 @@ echo "=========================================================="
 echo -e " Results:  ${GREEN}${PASS} passed${NC}  ${YELLOW}${WARN} warnings${NC}  ${RED}${FAIL} failures${NC}"
 echo "=========================================================="
 
-if [[ $FAIL -eq 0 ]]; then
+if [[ $FAIL -eq 0 ]] && [[ ${#FIXES[@]} -eq 0 ]]; then
     echo ""
     echo " System looks ready for Hailo-10H inference!"
-elif [[ -n "$HAILO_PCI" ]] && [[ ! -e /dev/hailo0 ]]; then
+    exit 0
+fi
+
+# --- Offer fixes ---
+if [[ ${#FIXES[@]} -gt 0 ]]; then
     echo ""
-    echo " Hardware detected but driver not working."
-    echo " Try: sudo modprobe hailo_pci"
-    echo " If that fails: sudo apt install --reinstall hailo-all && sudo reboot"
-elif [[ -z "$HAILO_PCI" ]]; then
+    echo -e "${BOLD}Found ${#FIXES[@]} issue(s) that can be fixed automatically:${NC}"
+
+    for i in "${!FIXES[@]}"; do
+        echo ""
+        echo -e "  ${BOLD}$((i+1)). ${FIXES[$i]}${NC}"
+        echo -e "     Command: ${FIX_CMDS[$i]}"
+    done
+
     echo ""
-    echo " Hardware not detected. Check physical connections,"
-    echo " then power off and back on (not just reboot)."
+    echo -n "Apply all fixes? [y/N/select] (enter number to apply one, 'y' for all): "
+    read -r answer
+
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+        NEED_REBOOT=false
+        for i in "${!FIXES[@]}"; do
+            echo ""
+            echo -e "  ${BOLD}[$((i+1))/${#FIXES[@]}] ${FIXES[$i]}${NC}"
+            echo "  Running: ${FIX_CMDS[$i]}"
+            eval "${FIX_CMDS[$i]}"
+            exit_code=$?
+            if [[ $exit_code -eq 0 ]]; then
+                echo -e "  ${GREEN}Done.${NC}"
+            else
+                echo -e "  ${RED}Failed (exit code: $exit_code)${NC}"
+            fi
+            # Check if this fix likely needs a reboot
+            if echo "${FIX_CMDS[$i]}" | grep -q "config.txt\|usermod"; then
+                NEED_REBOOT=true
+            fi
+        done
+        if [[ "$NEED_REBOOT" == true ]]; then
+            echo ""
+            echo -n "Some changes require a reboot. Reboot now? [y/N] "
+            read -r reboot_answer
+            if [[ "$reboot_answer" =~ ^[Yy]$ ]]; then
+                echo "Rebooting..."
+                sudo reboot
+            else
+                echo "Remember to reboot for changes to take effect."
+            fi
+        fi
+    elif [[ "$answer" =~ ^[0-9]+$ ]]; then
+        idx=$((answer - 1))
+        if [[ $idx -ge 0 ]] && [[ $idx -lt ${#FIXES[@]} ]]; then
+            echo ""
+            echo -e "  ${BOLD}${FIXES[$idx]}${NC}"
+            echo "  Running: ${FIX_CMDS[$idx]}"
+            eval "${FIX_CMDS[$idx]}"
+            exit_code=$?
+            if [[ $exit_code -eq 0 ]]; then
+                echo -e "  ${GREEN}Done.${NC}"
+            else
+                echo -e "  ${RED}Failed (exit code: $exit_code)${NC}"
+            fi
+            if echo "${FIX_CMDS[$idx]}" | grep -q "config.txt\|usermod"; then
+                echo ""
+                echo "This change requires a reboot to take effect."
+                echo -n "Reboot now? [y/N] "
+                read -r reboot_answer
+                if [[ "$reboot_answer" =~ ^[Yy]$ ]]; then
+                    sudo reboot
+                fi
+            fi
+        else
+            echo "  Invalid number."
+        fi
+    else
+        echo "  No fixes applied."
+    fi
+
+    # Suggest re-running after fixes
+    echo ""
+    echo "Run ./troubleshoot.sh again to verify fixes."
 fi
