@@ -114,26 +114,85 @@ PYEOF
     log " -> Exported: $ONNX_FILE"
 fi
 
-# --- Step 4: Compile ONNX to HEF ---
+# --- Step 4: Obtain HEF model ---
 
 log "[4/4] Checking HEF model..."
 if [[ -f "$HEF_FILE" ]]; then
     log " -> HEF model already exists: $HEF_FILE"
 else
-    log " -> Compiling ${MODEL_NAME} ONNX to HEF for Hailo-10H..."
-    log "    This may take a while (10-30+ minutes)."
+    # Strategy: try downloading a pre-compiled HEF from Hailo Model Zoo first.
+    # If that fails, fall back to local DFC compilation (requires hailo_sdk_client).
+    # Compiling on-device is slow (30+ min) and the DFC is not part of hailo-all,
+    # so pre-compiled is strongly preferred.
 
-    # Use Hailo Dataflow Compiler directly (hailo_model_zoo Python package
-    # requires Python <3.13 due to numba, so we avoid it entirely).
-    log " -> Compiling with Hailo Dataflow Compiler..."
+    HEF_DOWNLOADED=false
 
-    # Prepare calibration images for INT8 quantization.
-    # The Hailo DFC needs representative images to measure activation ranges.
-    CALIB_DIR="${MODEL_DIR}/calibration_${MODEL_NAME}"
-    if [[ ! -d "$CALIB_DIR" ]] || [[ $(find "$CALIB_DIR" -type f \( -name "*.jpg" -o -name "*.png" -o -name "*.jpeg" \) 2>/dev/null | wc -l) -lt 8 ]]; then
-        log " -> Generating calibration images from COCO validation set..."
-        mkdir -p "$CALIB_DIR"
-        python3 - <<CALPYEOF
+    # Try known Hailo Model Zoo pre-compiled HEF URLs
+    HEF_URLS=(
+        "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.14.0/hailo10h/${MODEL_NAME}.hef"
+        "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.13.0/hailo10h/${MODEL_NAME}.hef"
+    )
+
+    for url in "${HEF_URLS[@]}"; do
+        log " -> Trying to download pre-compiled HEF..."
+        log "    $url"
+        if python3 -c "
+from urllib.request import urlretrieve, Request, urlopen
+import sys
+url = '${url}'
+try:
+    req = Request(url, method='HEAD')
+    resp = urlopen(req, timeout=10)
+    if resp.status == 200:
+        print(f'Downloading ({resp.headers.get(\"Content-Length\", \"unknown\")} bytes)...')
+        urlretrieve(url, '${HEF_FILE}')
+        print('Done.')
+        sys.exit(0)
+except Exception as e:
+    print(f'Not available: {e}')
+    sys.exit(1)
+" 2>&1; then
+            HEF_DOWNLOADED=true
+            break
+        fi
+    done
+
+    if [[ "$HEF_DOWNLOADED" == true ]] && [[ -f "$HEF_FILE" ]]; then
+        log " -> Downloaded pre-compiled HEF: $HEF_FILE"
+    else
+        log " -> Pre-compiled HEF not available. Trying local compilation..."
+
+        # Check if Hailo Dataflow Compiler is installed
+        if ! python3 -c "import hailo_sdk_client" &>/dev/null; then
+            echo ""
+            echo "ERROR: Hailo Dataflow Compiler (hailo_sdk_client) is not installed." >&2
+            echo "" >&2
+            echo "The DFC is required to compile ONNX models to HEF on-device." >&2
+            echo "It is NOT included in the hailo-all apt package." >&2
+            echo "" >&2
+            echo "Options:" >&2
+            echo "  1. Install the DFC:" >&2
+            echo "     pip install hailo_dataflow_compiler" >&2
+            echo "     (may require Hailo Developer Zone access:" >&2
+            echo "      https://hailo.ai/developer-zone/)" >&2
+            echo "" >&2
+            echo "  2. Compile on another machine with the DFC installed," >&2
+            echo "     then copy the .hef file to: $HEF_FILE" >&2
+            echo "" >&2
+            echo "  3. Download a pre-compiled HEF from Hailo Model Zoo:" >&2
+            echo "     https://github.com/hailo-ai/hailo_model_zoo" >&2
+            echo "     and place it at: $HEF_FILE" >&2
+            exit 1
+        fi
+
+        log " -> Compiling with Hailo Dataflow Compiler (this may take 30+ minutes)..."
+
+        # Prepare calibration images for INT8 quantization.
+        CALIB_DIR="${MODEL_DIR}/calibration_${MODEL_NAME}"
+        if [[ ! -d "$CALIB_DIR" ]] || [[ $(find "$CALIB_DIR" -type f \( -name "*.jpg" -o -name "*.png" -o -name "*.jpeg" \) 2>/dev/null | wc -l) -lt 8 ]]; then
+            log " -> Generating calibration images from COCO validation set..."
+            mkdir -p "$CALIB_DIR"
+            python3 - <<CALPYEOF
 import os
 import urllib.request
 import zipfile
@@ -160,11 +219,11 @@ with zipfile.ZipFile(zip_path, "r") as zf:
 
 os.remove(zip_path)
 CALPYEOF
-    else
-        log " -> Calibration images already exist: $CALIB_DIR"
-    fi
+        else
+            log " -> Calibration images already exist: $CALIB_DIR"
+        fi
 
-    python3 - <<PYEOF
+        python3 - <<PYEOF
 import glob
 import numpy as np
 from PIL import Image
@@ -213,7 +272,8 @@ with open("${HEF_FILE}", "wb") as f:
     f.write(hef)
 print(f"Done: ${HEF_FILE}")
 PYEOF
-    log " -> Compiled: $HEF_FILE"
+        log " -> Compiled: $HEF_FILE"
+    fi
 fi
 
 echo ""
