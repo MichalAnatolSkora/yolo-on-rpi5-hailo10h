@@ -134,17 +134,18 @@ else
     log " -> Compiling ${MODEL_NAME} ONNX to HEF for Hailo-10H..."
     log "    This may take a while (10-30+ minutes)."
 
-    # Install Hailo Model Zoo Python package if not already installed
-    if ! python3 -c "import hailo_model_zoo" &>/dev/null; then
-        log " -> Installing Hailo Model Zoo Python package..."
-        pip install -e "${HAILO_MODEL_ZOO_DIR}"
-    fi
-
     # Compile using hailomz if a config exists, otherwise use the DFC directly
     YAML_PATH=$(find "$HAILO_MODEL_ZOO_DIR" -name "${MODEL_NAME}.yaml" -type f 2>/dev/null | head -1 || true)
 
     if [[ -n "$YAML_PATH" ]]; then
         log " -> Found Model Zoo config: $YAML_PATH"
+
+        # Install Hailo Model Zoo Python package (needed for hailomz CLI)
+        if ! python3 -c "import hailo_model_zoo" &>/dev/null; then
+            log " -> Installing Hailo Model Zoo Python package..."
+            pip install -e "${HAILO_MODEL_ZOO_DIR}"
+        fi
+
         hailomz compile "${MODEL_NAME}" \
             --ckpt "$ONNX_FILE" \
             --hw-arch hailo10h \

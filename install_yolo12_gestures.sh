@@ -11,7 +11,6 @@ DATASET_DIR="${HOME}/hagrid_yolo"
 MODEL_NAME="yolov12n_gestures"
 ONNX_FILE="${MODEL_DIR}/${MODEL_NAME}.onnx"
 HEF_FILE="${MODEL_DIR}/${MODEL_NAME}.hef"
-HAILO_MODEL_ZOO_DIR="${HOME}/hailo_model_zoo"
 VENV_DIR="${HOME}/hailo_venv"
 TRAIN_DIR="${MODEL_DIR}/${MODEL_NAME}_train"
 IMGSZ=640
@@ -268,17 +267,6 @@ if [[ -f "$HEF_FILE" ]]; then
 else
     log " -> Compiling gesture model to HEF for Hailo-10H..."
     log "    This may take 10-30+ minutes."
-
-    # Ensure Hailo Model Zoo is available
-    if [[ ! -d "$HAILO_MODEL_ZOO_DIR" ]]; then
-        log " -> Cloning Hailo Model Zoo..."
-        git clone https://github.com/hailo-ai/hailo_model_zoo.git "$HAILO_MODEL_ZOO_DIR"
-    fi
-
-    if ! python3 -c "import hailo_model_zoo" &>/dev/null; then
-        log " -> Installing Hailo Model Zoo Python package..."
-        pip install -e "${HAILO_MODEL_ZOO_DIR}"
-    fi
 
     # Use training images as calibration data for INT8 quantization.
     # The Hailo DFC needs representative images to measure activation ranges
