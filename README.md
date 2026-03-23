@@ -80,11 +80,23 @@ Look for `Speed 8GT/s` which indicates Gen 3 is active (Gen 2 would show `5GT/s`
 ```bash
 ./install_yolo12.sh
 ```
-This installs Ultralytics, exports YOLOv12n to ONNX, and compiles it to a Hailo-10H HEF. The script is idempotent — safe to re-run.
+Downloads a pre-compiled YOLOv12n HEF from Hailo Model Zoo and installs Python dependencies. Idempotent — safe to re-run.
 
-**Option B — Manual:**
-1.  Clone the [Hailo Model Zoo](https://github.com/hailo-ai/hailo_model_zoo) (use the `master` branch for Hailo-10H support).
-2.  Use the Hailo Dataflow Compiler (via Docker or native install) to convert an ONNX model (e.g., `yolov8n.onnx`) into a HEF targeting `hw_arch=hailo10h`.
+**Option B — Manual download:**
+
+Pre-compiled HEF files for Hailo-10H are available from the [Hailo Model Zoo](https://github.com/hailo-ai/hailo_model_zoo) S3 bucket (compiled with DFC v5.2.0):
+
+| Model | Size | Download |
+|---|---|---|
+| YOLOv12n | ~5.5 MB | [yolov12n.hef](https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/yolov12n.hef) |
+| YOLOv11n | ~4.9 MB | [yolov11n.hef](https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/yolov11n.hef) |
+| YOLOv8n | ~6.7 MB | [yolov8n.hef](https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/yolov8n.hef) |
+| YOLOv8s | ~13.1 MB | [yolov8s.hef](https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/yolov8s.hef) |
+| YOLOv8m | — | [yolov8m.hef](https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/yolov8m.hef) |
+
+URL pattern: `https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/<model_name>.hef`
+
+Place downloaded files in `~/hailo_models/`.
 
 ## Running Real-Time Inference (Camera)
 

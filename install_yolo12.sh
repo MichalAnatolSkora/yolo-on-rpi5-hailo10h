@@ -1,15 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-# Installs Ultralytics, exports YOLOv12n to ONNX, and compiles it to a Hailo-10H
-# HEF model. Idempotent — safe to run multiple times.
+# Downloads a pre-compiled YOLOv12n HEF model for Hailo-10H and installs
+# Python dependencies for inference. Idempotent — safe to run multiple times.
 
 MODEL_DIR="${HOME}/hailo_models"
 MODEL_NAME="yolov12n"
-ONNX_FILE="${MODEL_DIR}/${MODEL_NAME}.onnx"
 HEF_FILE="${MODEL_DIR}/${MODEL_NAME}.hef"
+HEF_URL="https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/${MODEL_NAME}.hef"
 VENV_DIR="${HOME}/hailo_venv"
-IMGSZ=640
 
 log() {
     echo "[$(date '+%H:%M:%S')] $1"
@@ -42,7 +41,7 @@ mkdir -p "$MODEL_DIR"
 
 # --- Step 1: Python virtual environment ---
 
-log "[1/4] Checking Python virtual environment..."
+log "[1/3] Checking Python virtual environment..."
 if [[ -d "$VENV_DIR" ]]; then
     log " -> Virtual environment already exists: $VENV_DIR"
 else
@@ -52,9 +51,9 @@ fi
 # shellcheck disable=SC1091
 source "${VENV_DIR}/bin/activate"
 
-# --- Step 2: Install Ultralytics ---
+# --- Step 2: Install Python dependencies ---
 
-log "[2/4] Checking Ultralytics..."
+log "[2/3] Checking Python dependencies..."
 if python3 -c "import ultralytics" &>/dev/null; then
     log " -> Ultralytics is already installed."
 else
@@ -63,217 +62,35 @@ else
     pip install ultralytics
 fi
 
-# --- Step 3: Export YOLOv12n to ONNX ---
+# --- Step 3: Download pre-compiled HEF ---
 
-log "[3/4] Checking ONNX model..."
-PT_FILE="${MODEL_DIR}/${MODEL_NAME}.pt"
-if [[ -f "$ONNX_FILE" ]]; then
-    log " -> ONNX model already exists: $ONNX_FILE"
-else
-    # Download weights if not cached
-    if [[ ! -f "$PT_FILE" ]]; then
-        log " -> Downloading ${MODEL_NAME} weights..."
-        python3 - <<DLEOF
-import os
-from urllib.request import urlretrieve
-
-pt_path = "${PT_FILE}"
-# YOLOv12 weights are hosted on GitHub releases
-url = "https://github.com/sunsmarterjie/yolov12/releases/download/v1.0/${MODEL_NAME}.pt"
-print(f"Downloading {url}")
-urlretrieve(url, pt_path)
-print(f"Saved to {pt_path}")
-DLEOF
-        if [[ ! -f "$PT_FILE" ]]; then
-            error_exit "Failed to download ${MODEL_NAME}.pt weights."
-        fi
-    fi
-
-    log " -> Exporting ${MODEL_NAME} to ONNX (imgsz=${IMGSZ})..."
-    python3 - <<PYEOF
-import os, shutil
-from ultralytics import YOLO
-
-pt_path = "${PT_FILE}"
-model = YOLO(pt_path)
-model.export(format="onnx", imgsz=${IMGSZ}, opset=13, dynamic=False)
-
-# The exported ONNX lands next to the .pt file
-onnx_candidates = [
-    pt_path.replace(".pt", ".onnx"),
-    "${MODEL_NAME}.onnx",
-]
-for candidate in onnx_candidates:
-    if os.path.isfile(candidate):
-        shutil.move(candidate, "${ONNX_FILE}")
-        break
-PYEOF
-    if [[ ! -f "$ONNX_FILE" ]]; then
-        error_exit "ONNX export failed. Check the output above."
-    fi
-    log " -> Exported: $ONNX_FILE"
-fi
-
-# --- Step 4: Obtain HEF model ---
-
-log "[4/4] Checking HEF model..."
+log "[3/3] Checking HEF model..."
 if [[ -f "$HEF_FILE" ]]; then
     log " -> HEF model already exists: $HEF_FILE"
 else
-    # Strategy: try downloading a pre-compiled HEF from Hailo Model Zoo first.
-    # If that fails, fall back to local DFC compilation (requires hailo_sdk_client).
-    # Compiling on-device is slow (30+ min) and the DFC is not part of hailo-all,
-    # so pre-compiled is strongly preferred.
+    log " -> Downloading pre-compiled ${MODEL_NAME} HEF for Hailo-10H..."
+    log "    Source: Hailo Model Zoo (compiled with DFC v5.2.0)"
 
-    HEF_DOWNLOADED=false
-
-    # Try known Hailo Model Zoo pre-compiled HEF URLs
-    HEF_URLS=(
-        "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.14.0/hailo10h/${MODEL_NAME}.hef"
-        "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.13.0/hailo10h/${MODEL_NAME}.hef"
-    )
-
-    for url in "${HEF_URLS[@]}"; do
-        log " -> Trying to download pre-compiled HEF..."
-        log "    $url"
-        if python3 -c "
+    python3 - <<PYEOF
 from urllib.request import urlretrieve, Request, urlopen
-import sys
-url = '${url}'
-try:
-    req = Request(url, method='HEAD')
-    resp = urlopen(req, timeout=10)
-    if resp.status == 200:
-        print(f'Downloading ({resp.headers.get(\"Content-Length\", \"unknown\")} bytes)...')
-        urlretrieve(url, '${HEF_FILE}')
-        print('Done.')
-        sys.exit(0)
-except Exception as e:
-    print(f'Not available: {e}')
-    sys.exit(1)
-" 2>&1; then
-            HEF_DOWNLOADED=true
-            break
-        fi
-    done
 
-    if [[ "$HEF_DOWNLOADED" == true ]] && [[ -f "$HEF_FILE" ]]; then
-        log " -> Downloaded pre-compiled HEF: $HEF_FILE"
-    else
-        log " -> Pre-compiled HEF not available. Trying local compilation..."
+url = "${HEF_URL}"
+out = "${HEF_FILE}"
 
-        # Check if Hailo Dataflow Compiler is installed
-        if ! python3 -c "import hailo_sdk_client" &>/dev/null; then
-            echo ""
-            echo "ERROR: Hailo Dataflow Compiler (hailo_sdk_client) is not installed." >&2
-            echo "" >&2
-            echo "The DFC is required to compile ONNX models to HEF on-device." >&2
-            echo "It is NOT included in the hailo-all apt package." >&2
-            echo "" >&2
-            echo "Options:" >&2
-            echo "  1. Install the DFC:" >&2
-            echo "     pip install hailo_dataflow_compiler" >&2
-            echo "     (may require Hailo Developer Zone access:" >&2
-            echo "      https://hailo.ai/developer-zone/)" >&2
-            echo "" >&2
-            echo "  2. Compile on another machine with the DFC installed," >&2
-            echo "     then copy the .hef file to: $HEF_FILE" >&2
-            echo "" >&2
-            echo "  3. Download a pre-compiled HEF from Hailo Model Zoo:" >&2
-            echo "     https://github.com/hailo-ai/hailo_model_zoo" >&2
-            echo "     and place it at: $HEF_FILE" >&2
-            exit 1
-        fi
-
-        log " -> Compiling with Hailo Dataflow Compiler (this may take 30+ minutes)..."
-
-        # Prepare calibration images for INT8 quantization.
-        CALIB_DIR="${MODEL_DIR}/calibration_${MODEL_NAME}"
-        if [[ ! -d "$CALIB_DIR" ]] || [[ $(find "$CALIB_DIR" -type f \( -name "*.jpg" -o -name "*.png" -o -name "*.jpeg" \) 2>/dev/null | wc -l) -lt 8 ]]; then
-            log " -> Generating calibration images from COCO validation set..."
-            mkdir -p "$CALIB_DIR"
-            python3 - <<CALPYEOF
-import os
-import urllib.request
-import zipfile
-
-calib_dir = "${CALIB_DIR}"
-zip_url = "https://ultralytics.com/assets/coco128.zip"
-zip_path = os.path.join(calib_dir, "coco128.zip")
-
-if not os.path.exists(zip_path):
-    print("Downloading COCO128 calibration subset...")
-    urllib.request.urlretrieve(zip_url, zip_path)
-
-print("Extracting calibration images...")
-with zipfile.ZipFile(zip_path, "r") as zf:
-    extracted = 0
-    for member in zf.namelist():
-        if member.endswith((".jpg", ".png", ".jpeg")) and extracted < 64:
-            data = zf.read(member)
-            filename = os.path.basename(member)
-            with open(os.path.join(calib_dir, filename), "wb") as f:
-                f.write(data)
-            extracted += 1
-    print(f"Extracted {extracted} calibration images to {calib_dir}")
-
-os.remove(zip_path)
-CALPYEOF
-        else
-            log " -> Calibration images already exist: $CALIB_DIR"
-        fi
-
-        python3 - <<PYEOF
-import glob
-import numpy as np
-from PIL import Image
-from hailo_sdk_client import ClientRunner
-
-IMGSZ = ${IMGSZ}
-CALIB_DIR = "${CALIB_DIR}"
-NUM_CALIB = 64
-
-# --- Translate ONNX to Hailo representation ---
-runner = ClientRunner(hw_arch="hailo10h")
-hn, npz = runner.translate_onnx_model(
-    "${ONNX_FILE}",
-    "${MODEL_NAME}",
-    start_node_names=["images"],
-    end_node_names=["output0"],
-    net_input_shapes={"images": [1, 3, IMGSZ, IMGSZ]},
-)
-runner.save_har("${MODEL_DIR}/${MODEL_NAME}_translated.har")
-
-# Add normalization to map 0-255 inputs to 0.0-1.0 internally
-runner.load_model_script("normalization1 = normalization([0.0, 0.0, 0.0], [255.0, 255.0, 255.0])\\n")
-
-# --- Build calibration dataset ---
-calib_images = sorted(glob.glob(f"{CALIB_DIR}/*.jpg") + glob.glob(f"{CALIB_DIR}/*.png"))
-if len(calib_images) == 0:
-    raise RuntimeError(f"No calibration images found in {CALIB_DIR}")
-
-calib_images = calib_images[:NUM_CALIB]
-print(f"Using {len(calib_images)} calibration images for INT8 quantization")
-
-calib_dataset = np.zeros((len(calib_images), IMGSZ, IMGSZ, 3), dtype=np.float32)
-for i, img_path in enumerate(calib_images):
-    img = Image.open(img_path).convert("RGB").resize((IMGSZ, IMGSZ))
-    calib_dataset[i] = np.array(img, dtype=np.float32)
-
-# --- Optimize with calibration data ---
-print("Running INT8 quantization with calibration data (this may take a while)...")
-runner.optimize(runner.get_default_optimization_config(), calib_dataset)
-runner.save_har("${MODEL_DIR}/${MODEL_NAME}_quantized.har")
-
-# --- Compile to HEF ---
-print("Compiling to HEF...")
-hef = runner.compile()
-with open("${HEF_FILE}", "wb") as f:
-    f.write(hef)
-print(f"Done: ${HEF_FILE}")
+print(f"Downloading {url}")
+req = Request(url, method="HEAD")
+resp = urlopen(req, timeout=15)
+size_mb = int(resp.headers.get("Content-Length", 0)) / 1024 / 1024
+if size_mb > 0:
+    print(f"Size: {size_mb:.1f} MB")
+urlretrieve(url, out)
+print(f"Saved to {out}")
 PYEOF
-        log " -> Compiled: $HEF_FILE"
+
+    if [[ ! -f "$HEF_FILE" ]]; then
+        error_exit "Failed to download HEF model from Hailo Model Zoo."
     fi
+    log " -> Downloaded: $HEF_FILE"
 fi
 
 echo ""
@@ -283,5 +100,5 @@ echo "                                                          "
 echo " Model: $HEF_FILE                                        "
 echo "                                                          "
 echo " Run inference:                                           "
-echo "   python run_yolo.py --model $HEF_FILE                  "
+echo "   python run_yolo12.py --model $HEF_FILE                "
 echo "=========================================================="

@@ -1,7 +1,15 @@
 {
   "permissions": {
     "allow": [
-      "Bash(chmod +x /Users/michal/sc/yolo-on-rpi5-hailo10h/install_yolo12_gestures.sh)"
+      "Bash(chmod +x /Users/michal/sc/yolo-on-rpi5-hailo10h/install_yolo12_gestures.sh)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:hailo-model-zoo.s3.eu-west-2.amazonaws.com)",
+      "WebFetch(domain:community.hailo.ai)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" \"https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.14.0/hailo10h/yolov8n.hef\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" \"https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.14.0/hailo8/yolov8n.hef\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" \"https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.15.0/hailo8/yolov8n.hef\")",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:forums.raspberrypi.com)"
     ]
   }
 }
