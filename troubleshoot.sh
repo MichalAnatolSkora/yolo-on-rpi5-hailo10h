@@ -154,7 +154,7 @@ else
     if ! dpkg -s dkms &>/dev/null || [[ ! -e "/lib/modules/$(uname -r)/build" ]]; then
         warn "DKMS or kernel headers are missing. The driver must be compiled for your current kernel ($(uname -r))."
         add_fix "Install DKMS, kernel headers, and rebuild Hailo PCIe driver" \
-                "sudo apt update && sudo apt install -y dkms raspberrypi-kernel-headers && sudo apt install --reinstall -y hailort-pcie-driver && sudo modprobe hailo_pci"
+                "sudo apt update && sudo apt install -y dkms \"linux-headers-\$(uname -r)\" && sudo apt install --reinstall -y hailort-pcie-driver && sudo modprobe hailo_pci"
     else
         add_fix "Load hailo_pci kernel module (or rebuild if it fails)" \
                 "sudo modprobe hailo_pci || (echo 'Failed to load. Rebuilding driver...' && sudo apt install --reinstall -y hailort-pcie-driver && sudo modprobe hailo_pci)"
