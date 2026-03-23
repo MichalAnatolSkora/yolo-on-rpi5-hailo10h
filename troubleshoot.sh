@@ -179,6 +179,15 @@ else
     info "The kernel driver did not create the device node"
     if [[ "$DRIVER_LOADED" == false ]]; then
         info "Driver is not loaded — fix that first (see above)"
+    else
+        HAILO_PCI_ID=$(lspci -nn 2>/dev/null | grep -i hailo | grep -o '\[[0-9a-fA-F]\{4\}:[0-9a-fA-F]\{4\}\]' | head -1 | tr -d '[]')
+        if [[ -n "$HAILO_PCI_ID" ]]; then
+            VENDOR_ID=$(echo "$HAILO_PCI_ID" | cut -d: -f1)
+            DEVICE_ID=$(echo "$HAILO_PCI_ID" | cut -d: -f2)
+            warn "Hardware ID ($VENDOR_ID:$DEVICE_ID) might not be on the driver allowlist."
+            add_fix "Dynamically bind the PCIe device to the hailo_pci driver" \
+                    "echo \"$VENDOR_ID $DEVICE_ID\" | sudo tee /sys/bus/pci/drivers/hailo_pci/new_id >/dev/null"
+        fi
     fi
 fi
 
