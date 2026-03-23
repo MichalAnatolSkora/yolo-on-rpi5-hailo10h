@@ -1,12 +1,15 @@
 # YOLO on Raspberry Pi 5 with Hailo-10H
 
-This repository contains scripts and documentation for configuring a Raspberry Pi 5 to run YOLO (You Only Live Once) object detection models hardware-accelerated via the Hailo-10H AI accelerator.
+This repository contains scripts and documentation for configuring a Raspberry Pi 5 to run YOLO (You Only Look Once) object detection models hardware-accelerated via the Hailo-10H AI accelerator.
 
 ## Hardware Requirements
-1.  **Raspberry Pi 5** (4GB or 8GB recommended).
-2.  **Hailo-10H NPU module** (typically via an M.2 Hat+ or similar PCIe expansion board).
-3.  **Active Cooler for Raspberry Pi 5** (Required, as the Pi 5 and Hailo module generate significant heat).
-4.  **Thermal Pad** (Used to transfer heat from the Hailo-10H module to the M.2 expansion board).
+| Component | Notes |
+|---|---|
+| **Raspberry Pi 5** | 4GB or 8GB RAM recommended |
+| **Hailo-10H NPU module** | Via M.2 Hat+ or similar PCIe expansion board |
+| **Active Cooler for Raspberry Pi 5** | Required — significant heat generation |
+| **Thermal Pad** | Transfers heat from Hailo-10H to the expansion board |
+| **Raspberry Pi Camera** *(optional)* | For real-time inference demos |
 
 ## Software Setup Instructions
 
@@ -56,12 +59,18 @@ You can either run the automated installation script or follow the manual steps 
 
 ## Verifying the Installation
 
-After rebooting, check that the Hailo-10H NPUs is recognized by the system and PCIe interface:
+After rebooting, check that the Hailo-10H NPU is recognized by the system:
 
 ```bash
 hailortcli fw-control identify
 ```
-You should see output similar to "Identifying board...", followed by details about the Hailo-10 structure and Firmware version. If it fails, check your physical M.2 seating or PCIe ribbon cable.
+You should see output similar to "Identifying board...", followed by details about the Hailo-10 structure and firmware version.
+
+You can also verify that PCIe Gen 3 is active:
+```bash
+sudo lspci -vv | grep -i hailo -A 20 | grep -i speed
+```
+Look for `Speed 8GT/s` which indicates Gen 3 is active (Gen 2 would show `5GT/s`).
 
 ## Acquiring Hailo-10H YOLO Models (`.hef`)
 
@@ -85,4 +94,32 @@ rpicam-hello -t 0 --post-process-file /usr/share/rpi-camera-assets/hailo/yolov8s
 
 You can use the provided `run_yolo.py` sample script as a starting point. It uses GStreamer, which allows seamless integration of camera fetching, Hailo inference, and drawing bounding boxes in a Python context without the complexity of raw C++ integration.
 
-**Ensure you run Python scripts from a virtual environment if `hailo` python modules are required, or use the system Python if packages were installed globally via `apt`.**
+**Install Python dependencies:**
+```bash
+pip install -r requirements.txt
+```
+
+**Run with Raspberry Pi Camera:**
+```bash
+python run_yolo.py --model ~/hailo_models/yolov8n.hef --labels coco.names
+```
+
+**Run with a USB camera:**
+```bash
+python run_yolo.py --model ~/hailo_models/yolov8n.hef --source /dev/video0
+```
+
+To find your USB camera device path, run `ls /dev/video*` or `v4l2-ctl --list-devices`.
+
+> **Note:** Use the system Python if Hailo packages were installed globally via `apt`, or a virtual environment with `--system-site-packages` to inherit them.
+
+## Troubleshooting
+
+| Problem | Solution |
+|---|---|
+| `hailortcli` not found | Ensure `hailo-all` is installed and you've rebooted |
+| `hailortcli fw-control identify` fails | Check M.2 seating, PCIe ribbon cable, and that the Hat+ is powered |
+| PCIe shows Gen 2 speed (5GT/s) | Verify `dtparam=pciex1_gen=3` is in `/boot/firmware/config.txt` under `[all]` and reboot |
+| GStreamer pipeline fails to open | Check camera connection with `rpicam-hello` first; ensure Hailo GStreamer plugins are installed |
+| `.hef` model errors | Confirm the model was compiled for `hailo10h` arch — Hailo-8 models are **not** compatible |
+| Poor thermal performance | Ensure active cooler is connected and thermal pad contacts the Hailo module |
