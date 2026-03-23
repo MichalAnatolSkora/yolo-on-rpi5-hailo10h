@@ -194,10 +194,20 @@ else
     log " -> Training YOLOv12n on gesture dataset (${EPOCHS} epochs)..."
     log "    This will take a while on Raspberry Pi. Consider training on a GPU machine."
 
+    # Reuse the base YOLOv12n weights if already downloaded by install_yolo12.sh
+    BASE_PT="${MODEL_DIR}/yolov12n.pt"
+
     python3 - <<PYEOF
+import os
 from ultralytics import YOLO
 
-model = YOLO("yolov12n.pt")
+base_pt = "${BASE_PT}"
+if os.path.isfile(base_pt):
+    model = YOLO(base_pt)
+else:
+    # Auto-downloads from Ultralytics hub
+    model = YOLO("yolov12n.pt")
+
 model.train(
     data="${DATASET_YAML}",
     epochs=${EPOCHS},
@@ -222,18 +232,22 @@ if [[ -f "$ONNX_FILE" ]]; then
 else
     log " -> Exporting trained model to ONNX..."
     python3 - <<PYEOF
+import os, shutil
 from ultralytics import YOLO
-import shutil
 
 model = YOLO("${BEST_PT}")
 model.export(format="onnx", imgsz=${IMGSZ}, opset=13, dynamic=False)
 
-# Move to model directory
-import os
+# The ONNX file lands next to best.pt
 exported = "${BEST_PT}".replace(".pt", ".onnx")
-if os.path.exists(exported):
+if os.path.isfile(exported):
     shutil.move(exported, "${ONNX_FILE}")
+else:
+    raise FileNotFoundError(f"Expected ONNX at {exported} but not found")
 PYEOF
+    if [[ ! -f "$ONNX_FILE" ]]; then
+        error_exit "ONNX export failed. Check the output above."
+    fi
     log " -> Exported: $ONNX_FILE"
 fi
 
@@ -257,23 +271,69 @@ else
         pip install -e "${HAILO_MODEL_ZOO_DIR}"
     fi
 
-    # Compile using Hailo Dataflow Compiler
+    # Use training images as calibration data for INT8 quantization.
+    # The Hailo DFC needs representative images to measure activation ranges
+    # for accurate post-training quantization — without them the model will
+    # have severely degraded accuracy or fail to compile.
+    CALIB_DIR="${DATASET_DIR}/images/val"
+    CALIB_FALLBACK="${DATASET_DIR}/images/train"
+
     python3 - <<PYEOF
+import glob
+import numpy as np
+from PIL import Image
 from hailo_sdk_client import ClientRunner
 
+IMGSZ = ${IMGSZ}
+NUM_CALIB = 64
+
+# --- Translate ONNX to Hailo representation ---
 runner = ClientRunner(hw_arch="hailo10h")
 hn, npz = runner.translate_onnx_model(
     "${ONNX_FILE}",
     "${MODEL_NAME}",
     start_node_names=["images"],
     end_node_names=["output0"],
-    net_input_shapes={"images": [1, 3, ${IMGSZ}, ${IMGSZ}]},
+    net_input_shapes={"images": [1, 3, IMGSZ, IMGSZ]},
 )
-runner.save_har("${MODEL_DIR}/${MODEL_NAME}.har")
-runner.optimize(runner.get_default_optimization_config())
+runner.save_har("${MODEL_DIR}/${MODEL_NAME}_translated.har")
+
+# Add normalization to map 0-255 inputs to 0.0-1.0 internally
+runner.load_model_script("normalization1 = normalization([0.0, 0.0, 0.0], [255.0, 255.0, 255.0])\\n")
+
+# --- Build calibration dataset from training/val images ---
+calib_images = sorted(
+    glob.glob("${CALIB_DIR}/*.jpg") + glob.glob("${CALIB_DIR}/*.png") +
+    glob.glob("${CALIB_DIR}/*.jpeg")
+)
+if len(calib_images) < 8:
+    # Fall back to training images if val set is too small
+    calib_images = sorted(
+        glob.glob("${CALIB_FALLBACK}/*.jpg") + glob.glob("${CALIB_FALLBACK}/*.png") +
+        glob.glob("${CALIB_FALLBACK}/*.jpeg")
+    )
+if len(calib_images) == 0:
+    raise RuntimeError("No calibration images found. Ensure dataset has images.")
+
+calib_images = calib_images[:NUM_CALIB]
+print(f"Using {len(calib_images)} calibration images for INT8 quantization")
+
+calib_dataset = np.zeros((len(calib_images), IMGSZ, IMGSZ, 3), dtype=np.float32)
+for i, img_path in enumerate(calib_images):
+    img = Image.open(img_path).convert("RGB").resize((IMGSZ, IMGSZ))
+    calib_dataset[i] = np.array(img, dtype=np.float32)
+
+# --- Optimize with calibration data ---
+print("Running INT8 quantization with calibration data (this may take a while)...")
+runner.optimize(runner.get_default_optimization_config(), calib_dataset)
+runner.save_har("${MODEL_DIR}/${MODEL_NAME}_quantized.har")
+
+# --- Compile to HEF ---
+print("Compiling to HEF...")
 hef = runner.compile()
 with open("${HEF_FILE}", "wb") as f:
     f.write(hef)
+print(f"Done: ${HEF_FILE}")
 PYEOF
     log " -> Compiled: $HEF_FILE"
 fi
