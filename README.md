@@ -104,6 +104,7 @@ Two inference scripts are provided:
 |---|---|---|
 | `run_yolo.py` | GStreamer pipeline | YOLOv8 with existing Hailo GStreamer post-process plugins |
 | `run_yolo12.py` | HailoRT Python API | YOLOv12 (or any model without a GStreamer .so) |
+| `run_gestures.py` | HailoRT + action engine | Hand gesture recognition with configurable triggers |
 
 **Install Python dependencies:**
 ```bash
@@ -126,6 +127,47 @@ python run_yolo12.py --model ~/hailo_models/yolov12n.hef --confidence 0.4 --iou 
 ```
 
 To find your USB camera device path, run `ls /dev/video*` or `v4l2-ctl --list-devices`.
+
+### Gesture Recognition
+
+Detects 18 hand gestures (HaGRID dataset) and maps them to configurable actions — shell commands, on-screen messages, CSV logging.
+
+**Do I need to run this if I already ran `install_yolo12.sh`?**
+Yes. The `install_yolo12.sh` script installs a general-purpose object detection model (YOLOv12n trained on COCO — 80 classes like person, car, dog). The gesture model is a **separate model** trained specifically on hand gestures (18 HaGRID classes like thumbs up, peace, fist). They use different datasets, different weights, and produce different `.hef` files. The install script will reuse the existing virtual environment and Hailo Model Zoo if you already ran `install_yolo12.sh`.
+
+**Install the gesture model:**
+```bash
+./install_yolo12_gestures.sh
+```
+This sets up HaGRID data, trains YOLOv12n on gestures, and compiles a Hailo-10H HEF. You'll need to supply training images from [HaGRID](https://github.com/hukenovs/hagrid) or [Roboflow](https://universe.roboflow.com) — the script will prompt you.
+
+**Run gesture recognition:**
+```bash
+python run_gestures.py --model ~/hailo_models/yolov12n_gestures.hef
+python run_gestures.py --model ~/hailo_models/yolov12n_gestures.hef --source /dev/video0
+python run_gestures.py --model ~/hailo_models/yolov12n_gestures.hef --headless --log-csv gestures.csv
+```
+
+**Configure actions** by editing `gesture_actions.yaml`:
+```yaml
+gestures:
+  like:
+    message: "Thumbs Up!"
+    command: "echo 'liked' >> /tmp/gesture_log.txt"
+    cooldown: 3       # seconds before re-triggering
+    hold_time: 0.5    # seconds gesture must be held
+  palm:
+    message: "Stop / Pause"
+    hold_time: 0.8
+```
+
+Features:
+- **Hold detection** — gesture must be held for a configurable duration before triggering
+- **Cooldown** — prevents rapid re-firing of the same gesture
+- **Action triggers** — run arbitrary shell commands on gesture detection
+- **HUD overlay** — FPS, active hand count, gesture history, hold progress bars
+- **Headless mode** — run without a display (SSH, automation, embedded)
+- **CSV logging** — append every triggered gesture to a CSV file for analysis
 
 > **Note:** Use the system Python if Hailo packages were installed globally via `apt`, or a virtual environment with `--system-site-packages` to inherit them.
 

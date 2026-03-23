@@ -1,0 +1,68 @@
+# Gesture-to-action mappings for run_gestures.py
+#
+# Each gesture can trigger:
+#   command:    Shell command to execute
+#   message:    Text shown on the overlay
+#   cooldown:   Seconds before the same gesture can trigger again (default: 2)
+#   hold_time:  Seconds the gesture must be held before triggering (default: 0)
+#
+# Supported gestures (HaGRID classes):
+#   call, dislike, fist, four, like, mute, ok, one, palm, peace,
+#   peace_inverted, rock, stop, stop_inverted, three, three2,
+#   two_up, two_up_inverted
+
+gestures:
+  like:
+    message: "👍 Thumbs Up!"
+    command: "echo 'GESTURE: like' >> /tmp/gesture_log.txt"
+    cooldown: 3
+    hold_time: 0.5
+
+  dislike:
+    message: "👎 Thumbs Down"
+    command: "echo 'GESTURE: dislike' >> /tmp/gesture_log.txt"
+    cooldown: 3
+    hold_time: 0.5
+
+  palm:
+    message: "✋ Stop / Pause"
+    command: "echo 'GESTURE: palm' >> /tmp/gesture_log.txt"
+    cooldown: 2
+    hold_time: 0.8
+
+  peace:
+    message: "✌️ Peace"
+    cooldown: 2
+
+  fist:
+    message: "✊ Fist"
+    cooldown: 2
+    hold_time: 1.0
+
+  ok:
+    message: "👌 OK"
+    command: "echo 'GESTURE: ok' >> /tmp/gesture_log.txt"
+    cooldown: 2
+
+  call:
+    message: "🤙 Call Me"
+    cooldown: 3
+
+  one:
+    message: "☝️ One / Point"
+    cooldown: 2
+
+  rock:
+    message: "🤘 Rock On!"
+    cooldown: 2
+
+  mute:
+    message: "🤫 Mute / Shush"
+    command: "echo 'GESTURE: mute' >> /tmp/gesture_log.txt"
+    cooldown: 3
+    hold_time: 1.0
+
+  stop:
+    message: "🛑 Stop!"
+    cooldown: 2
+    hold_time: 0.5
