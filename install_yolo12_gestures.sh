@@ -197,16 +197,25 @@ else
     # Reuse the base YOLOv12n weights if already downloaded by install_yolo12.sh
     BASE_PT="${MODEL_DIR}/yolov12n.pt"
 
+    # Download weights if not cached
+    if [[ ! -f "$BASE_PT" ]]; then
+        log " -> Downloading yolov12n base weights..."
+        python3 - <<DLEOF
+from urllib.request import urlretrieve
+url = "https://github.com/sunsmarterjie/yolov12/releases/download/v1.0/yolov12n.pt"
+print(f"Downloading {url}")
+urlretrieve(url, "${BASE_PT}")
+print("Done.")
+DLEOF
+        if [[ ! -f "$BASE_PT" ]]; then
+            error_exit "Failed to download yolov12n.pt weights."
+        fi
+    fi
+
     python3 - <<PYEOF
-import os
 from ultralytics import YOLO
 
-base_pt = "${BASE_PT}"
-if os.path.isfile(base_pt):
-    model = YOLO(base_pt)
-else:
-    # Auto-downloads from Ultralytics hub
-    model = YOLO("yolov12n.pt")
+model = YOLO("${BASE_PT}")
 
 model.train(
     data="${DATASET_YAML}",

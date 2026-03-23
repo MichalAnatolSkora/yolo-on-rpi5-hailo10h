@@ -71,26 +71,32 @@ PT_FILE="${MODEL_DIR}/${MODEL_NAME}.pt"
 if [[ -f "$ONNX_FILE" ]]; then
     log " -> ONNX model already exists: $ONNX_FILE"
 else
+    # Download weights if not cached
+    if [[ ! -f "$PT_FILE" ]]; then
+        log " -> Downloading ${MODEL_NAME} weights..."
+        python3 - <<DLEOF
+import os
+from urllib.request import urlretrieve
+
+pt_path = "${PT_FILE}"
+# YOLOv12 weights are hosted on GitHub releases
+url = "https://github.com/sunsmarterjie/yolov12/releases/download/v1.0/${MODEL_NAME}.pt"
+print(f"Downloading {url}")
+urlretrieve(url, pt_path)
+print(f"Saved to {pt_path}")
+DLEOF
+        if [[ ! -f "$PT_FILE" ]]; then
+            error_exit "Failed to download ${MODEL_NAME}.pt weights."
+        fi
+    fi
+
     log " -> Exporting ${MODEL_NAME} to ONNX (imgsz=${IMGSZ})..."
     python3 - <<PYEOF
-import os, shutil, glob
+import os, shutil
 from ultralytics import YOLO
 
 pt_path = "${PT_FILE}"
-
-# YOLO() auto-downloads weights if given just the model name.
-# Load by name so Ultralytics fetches it, then persist the .pt file.
-if os.path.isfile(pt_path):
-    model = YOLO(pt_path)
-else:
-    model = YOLO("${MODEL_NAME}.pt")
-    # Ultralytics downloads to cwd or ~/.config/ultralytics — find and copy it
-    for candidate in glob.glob("${MODEL_NAME}.pt") + glob.glob(
-        os.path.expanduser("~/.config/ultralytics/**/${MODEL_NAME}.pt"), recursive=True
-    ):
-        shutil.copy2(candidate, pt_path)
-        break
-
+model = YOLO(pt_path)
 model.export(format="onnx", imgsz=${IMGSZ}, opset=13, dynamic=False)
 
 # The exported ONNX lands next to the .pt file
