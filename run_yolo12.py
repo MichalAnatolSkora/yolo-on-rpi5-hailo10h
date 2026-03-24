@@ -158,8 +158,8 @@ def open_camera(source: str, width: int, height: int) -> cv2.VideoCapture:
         )
         return cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
 
-    # USB camera
-    cap = cv2.VideoCapture(source)
+    # USB camera — force V4L2 backend to avoid GStreamer issues
+    cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     return cap
@@ -167,6 +167,7 @@ def open_camera(source: str, width: int, height: int) -> cv2.VideoCapture:
 
 def run(args: argparse.Namespace) -> None:
     try:
+        import datetime
         from hailo_platform import HEF, VDevice, FormatType, HailoSchedulingAlgorithm
     except ImportError:
         log.error(
@@ -224,7 +225,9 @@ def run(args: argparse.Namespace) -> None:
                     # Run inference on Hailo-10H
                     bindings = configured_infer_model.create_bindings()
                     bindings.input().set_buffer(input_data)
-                    configured_infer_model.run([bindings])
+                    configured_infer_model.run(
+                        [bindings], datetime.timedelta(seconds=10)
+                    )
                     output = bindings.output().get_buffer()
 
                     # Postprocess and draw
