@@ -144,20 +144,62 @@ echo ""
 # --- 3. Kernel driver ---
 echo "--- Kernel Driver ---"
 
+# Determine which Hailo device is present: Hailo-8 uses hailo_pci, Hailo-10H uses hailo1x_pci
+HAILO_PCI_ID=$(lspci -nn 2>/dev/null | grep -i hailo | grep -o '\[[0-9a-fA-F]\{4\}:[0-9a-fA-F]\{4\}\]' | head -1 | tr -d '[]')
+HAILO_BDF=$(lspci 2>/dev/null | grep -i hailo | awk '{print $1}' | head -1)
+if [[ -n "$HAILO_PCI_ID" ]]; then
+    VENDOR_ID=$(echo "$HAILO_PCI_ID" | cut -d: -f1)
+    DEVICE_ID=$(echo "$HAILO_PCI_ID" | cut -d: -f2)
+fi
+
+# Detect Hailo-10H (device ID 45c4) vs Hailo-8 (device ID 2864)
+IS_HAILO10H=false
+if [[ "$DEVICE_ID" == "45c4" ]]; then
+    IS_HAILO10H=true
+    EXPECTED_DRIVER="hailo1x_pci"
+    EXPECTED_PKG="hailo-h10-all"
+    WRONG_DRIVER="hailo_pci"
+    WRONG_PKG="hailo-all"
+    info "Detected Hailo-10H (PCI ID $VENDOR_ID:$DEVICE_ID)"
+else
+    EXPECTED_DRIVER="hailo_pci"
+    EXPECTED_PKG="hailo-all"
+    WRONG_DRIVER="hailo1x_pci"
+    WRONG_PKG="hailo-h10-all"
+    info "Detected Hailo-8 (PCI ID ${VENDOR_ID:-unknown}:${DEVICE_ID:-unknown})"
+fi
+
+# Check for wrong driver conflict (e.g. hailo_pci loaded for Hailo-10H)
+WRONG_DRIVER_LOADED=false
+if lsmod 2>/dev/null | grep -q "^${WRONG_DRIVER} "; then
+    WRONG_DRIVER_LOADED=true
+    fail "Wrong driver loaded: $WRONG_DRIVER (this device needs $EXPECTED_DRIVER)"
+    info "The $WRONG_DRIVER driver is for $(if $IS_HAILO10H; then echo 'Hailo-8'; else echo 'Hailo-10H'; fi), not your device."
+    add_fix "Blacklist wrong driver ($WRONG_DRIVER) and install correct package ($EXPECTED_PKG)" \
+            "echo 'blacklist $WRONG_DRIVER' | sudo tee /etc/modprobe.d/hailo-blacklist.conf >/dev/null && sudo modprobe -r $WRONG_DRIVER 2>/dev/null; sudo apt update && sudo apt install -y $EXPECTED_PKG"
+fi
+
+# Check if expected driver is loaded
 DRIVER_LOADED=false
-if lsmod 2>/dev/null | grep -q hailo_pci; then
-    pass "hailo_pci kernel module is loaded"
+if lsmod 2>/dev/null | grep -q "^${EXPECTED_DRIVER} "; then
+    pass "$EXPECTED_DRIVER kernel module is loaded"
     DRIVER_LOADED=true
 else
-    fail "hailo_pci kernel module is NOT loaded"
+    if [[ "$WRONG_DRIVER_LOADED" == false ]]; then
+        fail "$EXPECTED_DRIVER kernel module is NOT loaded"
+    fi
 
-    if ! dpkg -s dkms &>/dev/null || [[ ! -e "/lib/modules/$(uname -r)/build" ]]; then
-        warn "DKMS or kernel headers are missing. The driver must be compiled for your current kernel ($(uname -r))."
-        add_fix "Install DKMS, kernel headers, and rebuild Hailo PCIe driver" \
-                "sudo apt update && sudo apt install -y dkms \"linux-headers-\$(uname -r)\" && sudo apt install --reinstall -y hailort-pcie-driver && sudo modprobe hailo_pci"
+    # Check if the correct package is installed
+    if dpkg -s "$EXPECTED_PKG" &>/dev/null; then
+        add_fix "Load $EXPECTED_DRIVER kernel module" \
+                "sudo modprobe $EXPECTED_DRIVER || (echo 'Failed to load. Reinstalling driver...' && sudo apt install --reinstall -y $EXPECTED_PKG && sudo modprobe $EXPECTED_DRIVER)"
     else
-        add_fix "Load hailo_pci kernel module (or rebuild if it fails)" \
-                "sudo modprobe hailo_pci || (echo 'Failed to load. Rebuilding driver...' && sudo apt install --reinstall -y hailort-pcie-driver && sudo modprobe hailo_pci)"
+        fail "Package $EXPECTED_PKG is NOT installed (required for your device)"
+        if dpkg -s "$WRONG_PKG" &>/dev/null; then
+            warn "Package $WRONG_PKG is installed instead — this is for $(if $IS_HAILO10H; then echo 'Hailo-8'; else echo 'Hailo-10H'; fi)"
+        fi
+        add_fix "Install correct Hailo package ($EXPECTED_PKG)" \
+                "sudo apt update && sudo apt install -y $EXPECTED_PKG && echo 'blacklist $WRONG_DRIVER' | sudo tee /etc/modprobe.d/hailo-blacklist.conf >/dev/null"
     fi
 fi
 
@@ -166,26 +208,6 @@ if command -v dkms &>/dev/null; then
     DKMS_STATUS=$(dkms status 2>/dev/null | grep -i hailo)
     if [[ -n "$DKMS_STATUS" ]]; then
         info "DKMS: $DKMS_STATUS"
-        # Parse DKMS status: "module_name/version, kernel, arch: status"
-        # e.g. "hailo_pci/4.23.0, 6.12.75+rpt-rpi-2712, aarch64: installed"
-        DKMS_MOD_NAME=$(echo "$DKMS_STATUS" | head -1 | cut -d'/' -f1 | xargs)
-        DKMS_MOD_VER=$(echo "$DKMS_STATUS" | head -1 | cut -d'/' -f2 | cut -d',' -f1 | xargs)
-        DKMS_KERNEL=$(echo "$DKMS_STATUS" | head -1 | cut -d',' -f2 | xargs)
-        if echo "$DKMS_STATUS" | grep -q "installed"; then
-            if [[ -n "$DKMS_KERNEL" ]] && [[ "$DKMS_KERNEL" != "$(uname -r)" ]]; then
-                warn "DKMS module built for $DKMS_KERNEL but running kernel is $(uname -r)"
-                add_fix "Rebuild Hailo DKMS module for current kernel $(uname -r)" \
-                        "sudo dkms remove ${DKMS_MOD_NAME}/${DKMS_MOD_VER} --all 2>/dev/null; sudo dkms install ${DKMS_MOD_NAME}/${DKMS_MOD_VER} -k $(uname -r) && sudo modprobe -r hailo_pci 2>/dev/null; sudo modprobe hailo_pci"
-            else
-                pass "DKMS module built for current kernel $(uname -r)"
-            fi
-        elif echo "$DKMS_STATUS" | grep -q "added"; then
-            warn "DKMS module is added but NOT built for any kernel"
-            add_fix "Build and install Hailo DKMS module for kernel $(uname -r)" \
-                    "sudo dkms install ${DKMS_MOD_NAME:-hailo_pci}/${DKMS_MOD_VER:-4.23.0} -k $(uname -r) && sudo modprobe -r hailo_pci 2>/dev/null; sudo modprobe hailo_pci"
-        fi
-    else
-        warn "No Hailo module found in DKMS"
     fi
 fi
 
@@ -204,72 +226,18 @@ if [[ -e /dev/hailo0 ]]; then
     fi
 else
     fail "/dev/hailo0 does NOT exist"
-    info "The kernel driver did not create the device node"
-    if [[ "$DRIVER_LOADED" == false ]]; then
-        info "Driver is not loaded — fix that first (see above)"
+    if [[ "$DRIVER_LOADED" == true ]]; then
+        info "Driver $EXPECTED_DRIVER is loaded but /dev/hailo0 was not created"
+        if [[ -n "$HAILO_BDF" ]] && [[ -d "/sys/bus/pci/drivers/$EXPECTED_DRIVER" ]]; then
+            if [[ ! -e "/sys/bus/pci/drivers/$EXPECTED_DRIVER/$HAILO_BDF" ]]; then
+                add_fix "Manually bind PCIe device $HAILO_BDF to $EXPECTED_DRIVER" \
+                        "echo '$HAILO_BDF' | sudo tee /sys/bus/pci/drivers/$EXPECTED_DRIVER/bind >/dev/null"
+            fi
+        fi
+    elif [[ "$WRONG_DRIVER_LOADED" == true ]] || ! dpkg -s "$EXPECTED_PKG" &>/dev/null; then
+        info "Install $EXPECTED_PKG and reboot to create the device node (see fixes above)"
     else
-        HAILO_PCI_ID=$(lspci -nn 2>/dev/null | grep -i hailo | grep -o '\[[0-9a-fA-F]\{4\}:[0-9a-fA-F]\{4\}\]' | head -1 | tr -d '[]')
-        HAILO_BDF=$(lspci 2>/dev/null | grep -i hailo | awk '{print $1}' | head -1)
-        if [[ -n "$HAILO_PCI_ID" ]]; then
-            VENDOR_ID=$(echo "$HAILO_PCI_ID" | cut -d: -f1)
-            DEVICE_ID=$(echo "$HAILO_PCI_ID" | cut -d: -f2)
-        fi
-
-        # Check if the driver's compiled PCI ID table includes this device
-        DRIVER_HAS_ID=unknown
-        if [[ -n "$DEVICE_ID" ]]; then
-            HAILO_MOD_PATH=$(modinfo hailo_pci 2>/dev/null | grep "^filename:" | awk '{print $2}')
-            if [[ -n "$HAILO_MOD_PATH" ]] && [[ -f "$HAILO_MOD_PATH" ]]; then
-                # Check the module's alias list for the device ID
-                if modinfo hailo_pci 2>/dev/null | grep -qi "alias.*${DEVICE_ID}"; then
-                    DRIVER_HAS_ID=yes
-                else
-                    DRIVER_HAS_ID=no
-                fi
-            fi
-        fi
-
-        if [[ "$DRIVER_HAS_ID" == "no" ]]; then
-            fail "Driver 4.23.0 does NOT support device ID $VENDOR_ID:$DEVICE_ID (Hailo-10H)"
-            info "The installed hailort-pcie-driver does not have this PCIe ID in its device table."
-            info "You may need a newer driver version that supports Hailo-10H."
-            # Try new_id as a workaround regardless of sysfs state
-            if [[ -d /sys/bus/pci/drivers/hailo_pci ]]; then
-                add_fix "Dynamically add device ID to hailo_pci driver (workaround)" \
-                        "echo \"$VENDOR_ID $DEVICE_ID\" | sudo tee /sys/bus/pci/drivers/hailo_pci/new_id >/dev/null"
-            else
-                add_fix "Reload driver and dynamically add device ID (workaround)" \
-                        "sudo modprobe -r hailo_pci 2>/dev/null; sudo modprobe hailo_pci && echo \"$VENDOR_ID $DEVICE_ID\" | sudo tee /sys/bus/pci/drivers/hailo_pci/new_id >/dev/null"
-            fi
-            add_fix "Check for newer hailo-all package with Hailo-10H support" \
-                    "sudo apt update && apt-cache policy hailo-all hailort-pcie-driver"
-        elif [[ "$DRIVER_HAS_ID" == "yes" ]]; then
-            warn "Hardware ID ($VENDOR_ID:$DEVICE_ID) is in the driver but device was not probed."
-            if [[ -d /sys/bus/pci/drivers/hailo_pci ]]; then
-                if [[ -n "$HAILO_BDF" ]] && [[ ! -e "/sys/bus/pci/drivers/hailo_pci/$HAILO_BDF" ]]; then
-                    add_fix "Manually bind PCIe device $HAILO_BDF to hailo_pci driver" \
-                            "echo '$HAILO_BDF' | sudo tee /sys/bus/pci/drivers/hailo_pci/bind >/dev/null 2>&1 || (echo '$HAILO_BDF' | sudo tee /sys/bus/pci/devices/$HAILO_BDF/driver/unbind >/dev/null 2>&1 && echo '$HAILO_BDF' | sudo tee /sys/bus/pci/drivers/hailo_pci/bind >/dev/null)"
-                fi
-            else
-                info "Driver module loaded but did not register with PCIe subsystem."
-                add_fix "Reinstall and reload the Hailo PCIe driver for kernel $(uname -r)" \
-                        "sudo modprobe -r hailo_pci && sudo apt install --reinstall -y hailort-pcie-driver && sudo modprobe hailo_pci"
-            fi
-        else
-            # Could not determine — fall back to previous logic
-            warn "Hardware ID ($VENDOR_ID:$DEVICE_ID) might not be on the driver allowlist."
-            if [[ -d /sys/bus/pci/drivers/hailo_pci ]]; then
-                if [[ -n "$VENDOR_ID" ]] && [[ -n "$DEVICE_ID" ]]; then
-                    add_fix "Dynamically bind the PCIe device to the hailo_pci driver" \
-                            "echo \"$VENDOR_ID $DEVICE_ID\" | sudo tee /sys/bus/pci/drivers/hailo_pci/new_id >/dev/null"
-                fi
-            else
-                info "Driver module loaded but did not register with PCIe subsystem."
-                info "This typically means the driver version doesn't match the kernel."
-                add_fix "Reinstall and reload the Hailo PCIe driver for kernel $(uname -r)" \
-                        "sudo modprobe -r hailo_pci && sudo apt install --reinstall -y hailort-pcie-driver && sudo modprobe hailo_pci"
-            fi
-        fi
+        info "Load the driver first (see fixes above)"
     fi
 fi
 
@@ -293,13 +261,18 @@ echo ""
 # --- 4. Hailo software packages ---
 echo "--- Software Packages ---"
 
-if dpkg -s hailo-all &>/dev/null; then
-    HAILO_VER=$(dpkg -s hailo-all 2>/dev/null | grep "^Version:" | awk '{print $2}')
-    pass "hailo-all is installed (version: ${HAILO_VER:-unknown})"
+if dpkg -s "$EXPECTED_PKG" &>/dev/null; then
+    HAILO_VER=$(dpkg -s "$EXPECTED_PKG" 2>/dev/null | grep "^Version:" | awk '{print $2}')
+    pass "$EXPECTED_PKG is installed (version: ${HAILO_VER:-unknown})"
 else
-    fail "hailo-all is NOT installed"
-    add_fix "Install hailo-all package" \
-            "sudo apt update && sudo apt install -y hailo-all"
+    fail "$EXPECTED_PKG is NOT installed"
+    add_fix "Install $EXPECTED_PKG package" \
+            "sudo apt update && sudo apt install -y $EXPECTED_PKG"
+fi
+# Warn if the wrong meta-package is installed
+if dpkg -s "$WRONG_PKG" &>/dev/null; then
+    WRONG_VER=$(dpkg -s "$WRONG_PKG" 2>/dev/null | grep "^Version:" | awk '{print $2}')
+    warn "$WRONG_PKG is installed (version: ${WRONG_VER:-unknown}) — this is for $(if $IS_HAILO10H; then echo 'Hailo-8'; else echo 'Hailo-10H'; fi)"
 fi
 
 if command -v hailortcli &>/dev/null; then
