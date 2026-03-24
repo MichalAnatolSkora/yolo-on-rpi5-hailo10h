@@ -8,7 +8,7 @@ set -euo pipefail
 
 MODEL_DIR="${HOME}/hailo_models"
 DATASET_DIR="${HOME}/hagrid_yolo"
-MODEL_NAME="yolov12n_gestures"
+MODEL_NAME="yolov11n_gestures"
 ONNX_FILE="${MODEL_DIR}/${MODEL_NAME}.onnx"
 HEF_FILE="${MODEL_DIR}/${MODEL_NAME}.hef"
 VENV_DIR="${HOME}/hailo_venv"
@@ -49,7 +49,7 @@ if ! dpkg -s "$HAILO_PKG" &>/dev/null; then
 fi
 
 echo "=========================================================="
-echo " YOLOv12 Gesture Recognition Setup for Hailo-10H         "
+echo " YOLO Gesture Recognition Setup for Hailo-10H (v5.1     "
 echo "=========================================================="
 
 mkdir -p "$MODEL_DIR"
@@ -198,24 +198,24 @@ BEST_PT="${TRAIN_DIR}/weights/best.pt"
 if [[ -f "$BEST_PT" ]]; then
     log " -> Trained model already exists: $BEST_PT"
 else
-    log " -> Training YOLOv12n on gesture dataset (${EPOCHS} epochs)..."
+    log " -> Training YOLO model on gesture dataset (${EPOCHS} epochs)..."
     log "    This will take a while on Raspberry Pi. Consider training on a GPU machine."
 
-    # Reuse the base YOLOv12n weights if already downloaded by install_yolo12.sh
-    BASE_PT="${MODEL_DIR}/yolov12n.pt"
+    # Reuse the base YOLOv11n weights if already downloaded
+    BASE_PT="${MODEL_DIR}/yolo11n.pt"
 
     # Download weights if not cached
     if [[ ! -f "$BASE_PT" ]]; then
-        log " -> Downloading yolov12n base weights..."
+        log " -> Downloading yolo11n base weights..."
         python3 - <<DLEOF
 from urllib.request import urlretrieve
-url = "https://github.com/sunsmarterjie/yolov12/releases/download/v1.0/yolov12n.pt"
+url = "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt"
 print(f"Downloading {url}")
 urlretrieve(url, "${BASE_PT}")
 print("Done.")
 DLEOF
         if [[ ! -f "$BASE_PT" ]]; then
-            error_exit "Failed to download yolov12n.pt weights."
+            error_exit "Failed to download yolo11n.pt weights."
         fi
     fi
 

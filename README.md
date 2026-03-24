@@ -39,21 +39,21 @@ sudo lspci -vv | grep -i hailo -A 20 | grep -i speed
 ```
 Look for `Speed 8GT/s` which indicates Gen 3 is active (Gen 2 would show `5GT/s`).
 
-## YOLOv12 Object Detection
+## YOLO Object Detection
 
 Install and run in two commands:
 
 ```bash
 ./install_yolo12.sh                                                       # downloads model + Python deps
-python run_yolo12.py --model ~/hailo_models/yolov12n.hef --display        # run with live preview
+python run_yolo12.py --model ~/hailo_models/yolov11n.hef --display        # run with live preview
 ```
 
-The install script downloads a pre-compiled YOLOv12n HEF from Hailo Model Zoo and sets up a Python virtual environment. Idempotent — safe to re-run.
+The install script downloads a pre-compiled YOLOv11n HEF from Hailo Model Zoo and sets up a Python virtual environment. Idempotent — safe to re-run.
 
 **Options:**
 ```bash
-python run_yolo12.py --model ~/hailo_models/yolov12n.hef --display --source /dev/video0  # USB camera
-python run_yolo12.py --model ~/hailo_models/yolov12n.hef --confidence 0.4 --iou 0.5      # headless (no window)
+python run_yolo12.py --model ~/hailo_models/yolov11n.hef --display --source /dev/video0  # USB camera
+python run_yolo12.py --model ~/hailo_models/yolov11n.hef --confidence 0.4 --iou 0.5      # headless (no window)
 ```
 
 To find your USB camera device path: `ls /dev/video*` or `v4l2-ctl --list-devices`.
@@ -64,15 +64,15 @@ Detects 18 hand gestures (HaGRID dataset) and maps them to configurable actions 
 
 ```bash
 ./install_yolo12_gestures.sh                                                    # setup model + dataset
-python run_gestures.py --model ~/hailo_models/yolov12n_gestures.hef --display   # run with live preview
+python run_gestures.py --model ~/hailo_models/yolov11n_gestures.hef --display   # run with live preview
 ```
 
 The gesture model is separate from the object detection model above — different dataset (HaGRID vs COCO), different weights. The install script will prompt you to supply training images from [HaGRID](https://github.com/hukenovs/hagrid) or [Roboflow](https://universe.roboflow.com), then trains and compiles a Hailo-10H HEF. Reuses the existing venv if you already ran `install_yolo12.sh`.
 
 **Options:**
 ```bash
-python run_gestures.py --model ~/hailo_models/yolov12n_gestures.hef --display --source /dev/video0
-python run_gestures.py --model ~/hailo_models/yolov12n_gestures.hef --log-csv gestures.csv   # headless
+python run_gestures.py --model ~/hailo_models/yolov11n_gestures.hef --display --source /dev/video0
+python run_gestures.py --model ~/hailo_models/yolov11n_gestures.hef --log-csv gestures.csv   # headless
 ```
 
 **Configure actions** in `gesture_actions.yaml`:

@@ -5,9 +5,9 @@ set -euo pipefail
 # Python dependencies for inference. Idempotent — safe to run multiple times.
 
 MODEL_DIR="${HOME}/hailo_models"
-MODEL_NAME="yolov12n"
+MODEL_NAME="yolov11n"
 HEF_FILE="${MODEL_DIR}/${MODEL_NAME}.hef"
-HEF_URL="https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/${MODEL_NAME}.hef"
+HEF_URL="https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.1.0/hailo10h/${MODEL_NAME}.hef"
 VENV_DIR="${HOME}/hailo_venv"
 
 log() {
@@ -42,7 +42,7 @@ if ! dpkg -s "$HAILO_PKG" &>/dev/null; then
 fi
 
 echo "=========================================================="
-echo " YOLOv12 Model Setup for Hailo-10H                       "
+echo " YOLO Model Setup for Hailo-10H (v5.1.1 Compatible)      "
 echo "=========================================================="
 
 mkdir -p "$MODEL_DIR"
@@ -77,7 +77,7 @@ if [[ -f "$HEF_FILE" ]]; then
     log " -> HEF model already exists: $HEF_FILE"
 else
     log " -> Downloading pre-compiled ${MODEL_NAME} HEF for Hailo-10H..."
-    log "    Source: Hailo Model Zoo (compiled with DFC v5.2.0)"
+    log "    Source: Hailo Model Zoo (compiled with DFC v5.1.0, compatible with HailoRT 5.1.1)"
 
     python3 - <<PYEOF
 from urllib.request import urlretrieve, Request, urlopen
@@ -103,7 +103,7 @@ fi
 
 echo ""
 echo "=========================================================="
-echo " YOLOv12 setup complete!                                  "
+echo " YOLO setup complete!                                     "
 echo "                                                          "
 echo " Model: $HEF_FILE                                        "
 echo "                                                          "
