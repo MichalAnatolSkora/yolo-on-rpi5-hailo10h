@@ -438,8 +438,11 @@ def open_camera(source: str, width: int, height: int) -> cv2.VideoCapture:
 
 def run(args: argparse.Namespace) -> None:
     try:
-        import datetime
-        from hailo_platform import HEF, VDevice, FormatType, HailoSchedulingAlgorithm
+        from hailo_platform import (
+            HEF, VDevice, HailoStreamInterface, FormatType,
+            InferVStreams, InputVStreamParams, OutputVStreamParams,
+            HailoSchedulingAlgorithm,
+        )
     except ImportError:
         log.error(
             "hailo_platform not found. Ensure hailo-all is installed and you are "
@@ -474,36 +477,44 @@ def run(args: argparse.Namespace) -> None:
     log.info("Loading model: %s", args.model)
     hef = HEF(args.model)
 
+    # Check if model has on-chip NMS
+    output_vstream_infos = hef.get_output_vstream_infos()
+    has_nms = any("nms" in info.name.lower() for info in output_vstream_infos)
+    if has_nms:
+        log.info("Model has on-chip NMS — using NMS output format")
+
+    # Get input info for shape
+    input_vstream_infos = hef.get_input_vstream_infos()
+    input_shape = input_vstream_infos[0].shape
+    input_h, input_w = input_shape[1], input_shape[2]
+    input_name = input_vstream_infos[0].name
+
     params = VDevice.create_params()
     params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
 
     with VDevice(params) as vdevice:
-        infer_model = vdevice.create_infer_model(args.model)
-        infer_model.set_batch_size(1)
+        network_group = vdevice.configure(hef)[0]
 
-        # Check if model has on-chip NMS
-        output_vstream = infer_model.output()
-        has_nms = "nms" in output_vstream.name.lower()
-        if has_nms:
-            log.info("Model has on-chip NMS (%s) — using NMS output format", output_vstream.name)
-            infer_model.output().set_format_type(FormatType.FLOAT32)
+        input_vstream_params = InputVStreamParams.make(
+            network_group, format_type=FormatType.UINT8
+        )
+        output_vstream_params = OutputVStreamParams.make(
+            network_group, format_type=FormatType.FLOAT32
+        )
 
-        with infer_model.configure() as configured_infer_model:
-            input_vstream = infer_model.input()
-            input_shape = input_vstream.shape
-            input_h, input_w = input_shape[1], input_shape[2]
-            log.info("Model input: %s | Classes: %d | NMS: %s", input_shape, len(labels), has_nms)
+        log.info("Model input: %s | Classes: %d | NMS: %s", input_shape, len(labels), has_nms)
 
-            # Open camera
-            log.info("Opening camera (source=%s)...", args.source)
-            cap = open_camera(args.source, args.capture_width, args.capture_height)
-            if not cap.isOpened():
-                log.error("Could not open camera.")
-                sys.exit(1)
+        # Open camera
+        log.info("Opening camera (source=%s)...", args.source)
+        cap = open_camera(args.source, args.capture_width, args.capture_height)
+        if not cap.isOpened():
+            log.error("Could not open camera.")
+            sys.exit(1)
 
-            log.info("Running gesture recognition. Press 'q' to quit.")
-            prev_time = time.monotonic()
+        log.info("Running gesture recognition. Press 'q' to quit.")
+        prev_time = time.monotonic()
 
+        with InferVStreams(network_group, input_vstream_params, output_vstream_params) as pipeline:
             try:
                 while not _shutdown:
                     ret, frame = cap.read()
@@ -513,17 +524,17 @@ def run(args: argparse.Namespace) -> None:
 
                     # Inference
                     input_data = preprocess(frame, input_h, input_w)
-                    bindings = configured_infer_model.create_bindings()
-                    bindings.input().set_buffer(input_data)
-                    configured_infer_model.run(
-                        [bindings], datetime.timedelta(seconds=10)
-                    )
-                    output = bindings.output().get_buffer()
+                    input_dict = {input_name: np.expand_dims(input_data, axis=0)}
+                    results = pipeline.infer(input_dict)
+
+                    # Get output (first output layer)
+                    output_name = list(results.keys())[0]
+                    output = results[output_name][0]  # remove batch dim
 
                     # Postprocess
                     if has_nms:
                         detections = postprocess_nms(
-                            output, frame.shape[0], frame.shape[1],
+                            output.flatten(), frame.shape[0], frame.shape[1],
                             len(labels), args.confidence, labels,
                         )
                     else:
