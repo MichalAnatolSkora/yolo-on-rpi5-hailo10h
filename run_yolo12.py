@@ -71,7 +71,44 @@ def preprocess(frame: np.ndarray, input_h: int, input_w: int) -> np.ndarray:
     return rgb.astype(np.uint8)
 
 
-def postprocess(
+def postprocess_nms(
+    output: np.ndarray,
+    frame_h: int,
+    frame_w: int,
+    num_classes: int,
+    conf_threshold: float,
+) -> list[tuple]:
+    """
+    Parse Hailo on-chip NMS output and return detections.
+
+    Hailo NMS output is a flat array organized per class:
+      [num_det_class0, y_min, x_min, y_max, x_max, score, ..., num_det_class1, ...]
+    Coordinates are normalized [0, 1].
+
+    Returns list of (x1, y1, x2, y2, confidence, class_id).
+    """
+    detections = []
+    offset = 0
+    for class_id in range(num_classes):
+        if offset >= len(output):
+            break
+        num_dets = int(output[offset])
+        offset += 1
+        for _ in range(num_dets):
+            if offset + 5 > len(output):
+                break
+            y_min, x_min, y_max, x_max, score = output[offset:offset + 5]
+            offset += 5
+            if score >= conf_threshold:
+                detections.append((
+                    int(x_min * frame_w), int(y_min * frame_h),
+                    int(x_max * frame_w), int(y_max * frame_h),
+                    float(score), class_id,
+                ))
+    return detections
+
+
+def postprocess_raw(
     output: np.ndarray,
     frame_h: int,
     frame_w: int,
@@ -81,7 +118,7 @@ def postprocess(
     iou_threshold: float,
 ) -> list[tuple]:
     """
-    Parse YOLO output tensor and return detections.
+    Parse raw YOLO output tensor (no on-chip NMS) and return detections.
 
     Handles the standard YOLO output format: (1, num_detections, 4 + num_classes)
     where the 4 values are [x_center, y_center, width, height].
@@ -194,9 +231,15 @@ def run(args: argparse.Namespace) -> None:
         infer_model = vdevice.create_infer_model(args.model)
         infer_model.set_batch_size(1)
 
+        # Check if model has on-chip NMS
+        output_vstream = infer_model.output()
+        has_nms = "nms" in output_vstream.name.lower()
+        if has_nms:
+            log.info("Model has on-chip NMS (%s) — using NMS output format", output_vstream.name)
+            infer_model.output().set_format_type(FormatType.FLOAT32)
+
         with infer_model.configure() as configured_infer_model:
             input_vstream = infer_model.input()
-            output_vstream = infer_model.output()
 
             input_shape = input_vstream.shape
             input_h, input_w = input_shape[1], input_shape[2]
@@ -231,12 +274,20 @@ def run(args: argparse.Namespace) -> None:
                     output = bindings.output().get_buffer()
 
                     # Postprocess and draw
-                    detections = postprocess(
-                        output,
-                        frame.shape[0], frame.shape[1],
-                        input_h, input_w,
-                        args.confidence, args.iou,
-                    )
+                    if has_nms:
+                        detections = postprocess_nms(
+                            output,
+                            frame.shape[0], frame.shape[1],
+                            len(labels),
+                            args.confidence,
+                        )
+                    else:
+                        detections = postprocess_raw(
+                            output,
+                            frame.shape[0], frame.shape[1],
+                            input_h, input_w,
+                            args.confidence, args.iou,
+                        )
                     frame = draw_detections(frame, detections, labels)
 
                     # Show FPS every 30 frames
