@@ -162,14 +162,50 @@ def preprocess(frame: np.ndarray, input_h: int, input_w: int) -> np.ndarray:
     return cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.uint8)
 
 
-def postprocess(
+def postprocess_nms(
+    output: np.ndarray,
+    frame_h: int, frame_w: int,
+    num_classes: int,
+    conf_threshold: float,
+    labels: list[str],
+) -> list[Detection]:
+    """Parse Hailo on-chip NMS output into Detection objects.
+
+    Hailo NMS output is a flat array organized per class:
+      [num_det_class0, y_min, x_min, y_max, x_max, score, ..., num_det_class1, ...]
+    Coordinates are normalized [0, 1].
+    """
+    detections = []
+    offset = 0
+    for class_id in range(num_classes):
+        if offset >= len(output):
+            break
+        num_dets = int(output[offset])
+        offset += 1
+        for _ in range(num_dets):
+            if offset + 5 > len(output):
+                break
+            y_min, x_min, y_max, x_max, score = output[offset:offset + 5]
+            offset += 5
+            if score >= conf_threshold:
+                detections.append(Detection(
+                    x1=int(x_min * frame_w), y1=int(y_min * frame_h),
+                    x2=int(x_max * frame_w), y2=int(y_max * frame_h),
+                    confidence=float(score),
+                    class_id=class_id,
+                    class_name=labels[class_id] if class_id < len(labels) else str(class_id),
+                ))
+    return detections
+
+
+def postprocess_raw(
     output: np.ndarray,
     frame_h: int, frame_w: int,
     input_h: int, input_w: int,
     conf_threshold: float, iou_threshold: float,
     labels: list[str],
 ) -> list[Detection]:
-    """Parse YOLO output tensor into Detection objects."""
+    """Parse raw YOLO output tensor (no on-chip NMS) into Detection objects."""
     if output.ndim == 3:
         output = output[0]
     if output.shape[0] < output.shape[1]:
@@ -403,7 +439,7 @@ def open_camera(source: str, width: int, height: int) -> cv2.VideoCapture:
 def run(args: argparse.Namespace) -> None:
     try:
         import datetime
-        from hailo_platform import HEF, VDevice, HailoSchedulingAlgorithm
+        from hailo_platform import HEF, VDevice, FormatType, HailoSchedulingAlgorithm
     except ImportError:
         log.error(
             "hailo_platform not found. Ensure hailo-all is installed and you are "
@@ -445,11 +481,18 @@ def run(args: argparse.Namespace) -> None:
         infer_model = vdevice.create_infer_model(args.model)
         infer_model.set_batch_size(1)
 
+        # Check if model has on-chip NMS
+        output_vstream = infer_model.output()
+        has_nms = "nms" in output_vstream.name.lower()
+        if has_nms:
+            log.info("Model has on-chip NMS (%s) — using NMS output format", output_vstream.name)
+            infer_model.output().set_format_type(FormatType.FLOAT32)
+
         with infer_model.configure() as configured_infer_model:
             input_vstream = infer_model.input()
             input_shape = input_vstream.shape
             input_h, input_w = input_shape[1], input_shape[2]
-            log.info("Model input: %s | Classes: %d", input_shape, len(labels))
+            log.info("Model input: %s | Classes: %d | NMS: %s", input_shape, len(labels), has_nms)
 
             # Open camera
             log.info("Opening camera (source=%s)...", args.source)
@@ -478,11 +521,17 @@ def run(args: argparse.Namespace) -> None:
                     output = bindings.output().get_buffer()
 
                     # Postprocess
-                    detections = postprocess(
-                        output, frame.shape[0], frame.shape[1],
-                        input_h, input_w,
-                        args.confidence, args.iou, labels,
-                    )
+                    if has_nms:
+                        detections = postprocess_nms(
+                            output, frame.shape[0], frame.shape[1],
+                            len(labels), args.confidence, labels,
+                        )
+                    else:
+                        detections = postprocess_raw(
+                            output, frame.shape[0], frame.shape[1],
+                            input_h, input_w,
+                            args.confidence, args.iou, labels,
+                        )
 
                     # Process gesture actions
                     process_gestures(detections, actions, tracker, csv_writer)
