@@ -10,7 +10,7 @@ Usage:
     python run_gestures.py --model ~/hailo_models/yolov12n_gestures.hef
     python run_gestures.py --model ~/hailo_models/yolov12n_gestures.hef --source /dev/video0
     python run_gestures.py --model ~/hailo_models/yolov12n_gestures.hef --actions gesture_actions.yaml
-    python run_gestures.py --model ~/hailo_models/yolov12n_gestures.hef --headless --log-csv gestures.csv
+    python run_gestures.py --model ~/hailo_models/yolov12n_gestures.hef --log-csv gestures.csv
 
 Prerequisites:
     - YOLOv12 gesture .hef model compiled for Hailo-10H
@@ -494,7 +494,7 @@ def run(args: argparse.Namespace) -> None:
                     tracker.fps_samples.append(1.0 / dt if dt > 0 else 0)
                     fps = sum(tracker.fps_samples) / len(tracker.fps_samples)
 
-                    if not args.headless:
+                    if args.display:
                         draw_detections(frame, detections)
                         draw_hud(frame, tracker, detections, fps)
                         cv2.imshow("Gesture Recognition - Hailo-10H", frame)
@@ -509,7 +509,7 @@ def run(args: argparse.Namespace) -> None:
 
             finally:
                 cap.release()
-                if not args.headless:
+                if args.display:
                     cv2.destroyAllWindows()
                 if csv_file:
                     csv_file.close()
@@ -556,8 +556,8 @@ def main() -> None:
         help="NMS IoU threshold (default: 0.45)",
     )
     parser.add_argument(
-        "--headless", action="store_true",
-        help="Run without display window (e.g. for SSH or automation)",
+        "--display", action="store_true",
+        help="Show live preview window (requires a display/monitor)",
     )
     parser.add_argument(
         "--log-csv", default="",

@@ -245,12 +245,14 @@ def run(args: argparse.Namespace) -> None:
                         fps = cap.get(cv2.CAP_PROP_FPS) or 0
                         log.info("Detections: %d | Camera FPS: %.1f", len(detections), fps)
 
-                    cv2.imshow("YOLOv12 Hailo-10H", frame)
-                    if cv2.waitKey(1) & 0xFF == ord("q"):
-                        break
+                    if args.display:
+                        cv2.imshow("YOLOv12 Hailo-10H", frame)
+                        if cv2.waitKey(1) & 0xFF == ord("q"):
+                            break
             finally:
                 cap.release()
-                cv2.destroyAllWindows()
+                if args.display:
+                    cv2.destroyAllWindows()
                 log.info("Stopped.")
 
 
@@ -282,6 +284,10 @@ def main() -> None:
     )
     parser.add_argument(
         "--iou", type=float, default=0.45, help="NMS IoU threshold (default: 0.45)"
+    )
+    parser.add_argument(
+        "--display", action="store_true",
+        help="Show live preview window (requires a display/monitor)",
     )
     parser.add_argument(
         "--verbose", action="store_true", help="Enable debug logging"
