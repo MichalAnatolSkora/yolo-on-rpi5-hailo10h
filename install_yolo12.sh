@@ -29,8 +29,16 @@ if [[ $EUID -eq 0 ]]; then
     error_exit "Do not run this script as root. It will use sudo when needed."
 fi
 
-if ! dpkg -s hailo-all &>/dev/null; then
-    error_exit "hailo-all is not installed. Run ./install_hailo.sh first."
+# Detect Hailo-10H (45c4) vs Hailo-8 (2864) and check correct package
+HAILO_DEV_ID=$(lspci -nn 2>/dev/null | grep -i hailo | grep -o '\[[0-9a-fA-F]\{4\}:[0-9a-fA-F]\{4\}\]' | head -1 | tr -d '[]' | cut -d: -f2)
+if [[ "$HAILO_DEV_ID" == "45c4" ]]; then
+    HAILO_PKG="hailo-h10-all"
+else
+    HAILO_PKG="hailo-all"
+fi
+
+if ! dpkg -s "$HAILO_PKG" &>/dev/null; then
+    error_exit "$HAILO_PKG is not installed. Run ./install_hailo.sh first."
 fi
 
 echo "=========================================================="

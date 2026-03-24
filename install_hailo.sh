@@ -49,12 +49,36 @@ fi
 # --- Step 2: Install Hailo software suite (skip if already installed) ---
 
 log "[2/4] Checking Hailo software suite..."
-if dpkg -s hailo-all &>/dev/null; then
-    log " -> hailo-all is already installed."
+
+# Detect which Hailo device is present: Hailo-10H (45c4) needs hailo-h10-all, Hailo-8 (2864) needs hailo-all
+HAILO_DEV_ID=$(lspci -nn 2>/dev/null | grep -i hailo | grep -o '\[[0-9a-fA-F]\{4\}:[0-9a-fA-F]\{4\}\]' | head -1 | tr -d '[]' | cut -d: -f2)
+if [[ "$HAILO_DEV_ID" == "45c4" ]]; then
+    HAILO_PKG="hailo-h10-all"
+    WRONG_PKG="hailo-all"
+    WRONG_DRIVER="hailo_pci"
+    log " -> Detected Hailo-10H — using package $HAILO_PKG"
 else
-    log " -> Installing hailo-all..."
-    sudo apt-get install hailo-all -y
+    HAILO_PKG="hailo-all"
+    WRONG_PKG="hailo-h10-all"
+    WRONG_DRIVER="hailo1x_pci"
+    log " -> Detected Hailo-8 — using package $HAILO_PKG"
+fi
+
+if dpkg -s "$HAILO_PKG" &>/dev/null; then
+    log " -> $HAILO_PKG is already installed."
+else
+    log " -> Installing $HAILO_PKG..."
+    sudo apt-get install "$HAILO_PKG" -y
     CHANGES_MADE=true
+fi
+
+# Blacklist wrong driver if present to avoid conflicts
+if dpkg -s "$WRONG_PKG" &>/dev/null || modinfo "$WRONG_DRIVER" &>/dev/null 2>&1; then
+    if [[ ! -f /etc/modprobe.d/hailo-blacklist.conf ]] || ! grep -q "blacklist $WRONG_DRIVER" /etc/modprobe.d/hailo-blacklist.conf 2>/dev/null; then
+        log " -> Blacklisting conflicting driver $WRONG_DRIVER..."
+        echo "blacklist $WRONG_DRIVER" | sudo tee /etc/modprobe.d/hailo-blacklist.conf >/dev/null
+        CHANGES_MADE=true
+    fi
 fi
 
 # --- Step 3: Enable PCIe Gen 3 ---

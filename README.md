@@ -1,6 +1,8 @@
 # YOLO on Raspberry Pi 5 with Hailo-10H
 
-This repository contains scripts and documentation for configuring a Raspberry Pi 5 to run YOLO (You Only Look Once) object detection models hardware-accelerated via the Hailo-10H AI accelerator.
+> **If this repo saved you hours of Hailo configuration headaches, please give it a :star: — it helps others find it too!**
+
+One-click setup for running YOLO object detection on Raspberry Pi 5 with the Hailo-10H AI accelerator. Handles driver installation, PCIe configuration, model downloads, and diagnostics automatically.
 
 ## Hardware Requirements
 | Component | Notes |
@@ -11,51 +13,16 @@ This repository contains scripts and documentation for configuring a Raspberry P
 | **Thermal Pad** | Transfers heat from Hailo-10H to the expansion board |
 | **Raspberry Pi Camera** *(optional)* | For real-time inference demos |
 
-## Software Setup Instructions
+## Quick Start
 
-You can either run the automated installation script or follow the manual steps below.
+```bash
+git clone https://github.com/MichalAnatolSkora/yolo-on-rpi5-hailo10h.git
+cd yolo-on-rpi5-hailo10h
+./install_hailo.sh
+sudo reboot
+```
 
-### Method 1: Automated Installation
-
-1.  Make the installation script executable:
-    ```bash
-    chmod +x install_hailo.sh
-    ```
-2.  Run the script:
-    ```bash
-    ./install_hailo.sh
-    ```
-3.  **Reboot your Raspberry Pi** to apply the PCIe changes.
-    ```bash
-    sudo reboot
-    ```
-
-### Method 2: Manual Installation
-
-1.  **Update OS Packages:**
-    Ensure your Raspberry Pi OS Bookworm (64-bit) is fully updated.
-    ```bash
-    sudo apt update && sudo apt full-upgrade -y
-    ```
-2.  **Enable PCIe Gen 3:**
-    This allows maximum data transfer speeds for the Hailo-10H.
-    Edit your boot configuration file:
-    ```bash
-    sudo nano /boot/firmware/config.txt
-    ```
-    Add or ensure the following line is present under the `[all]` section:
-    ```text
-    dtparam=pciex1_gen=3
-    ```
-3.  **Install Hailo Software Suite:**
-    Install all required Hailo drivers, runtime (`hailort`), and camera integration tools.
-    ```bash
-    sudo apt install hailo-all -y
-    ```
-4.  **Reboot:**
-    ```bash
-    sudo reboot
-    ```
+That's it. The script auto-detects your hardware (Hailo-10H or Hailo-8), installs the correct driver package, enables PCIe Gen 3, and blacklists conflicting drivers if needed.
 
 ## Verifying the Installation
 
@@ -193,7 +160,7 @@ It checks PCIe detection, kernel driver, firmware, device availability, Python b
 
 | Problem | Solution |
 |---|---|
-| `hailortcli` not found | Ensure `hailo-all` is installed and you've rebooted |
+| `hailortcli` not found | Run `./install_hailo.sh` and reboot |
 | `hailortcli fw-control identify` fails | Check M.2 seating, PCIe ribbon cable, and that the Hat+ is powered |
 | PCIe shows Gen 2 speed (5GT/s) | Verify `dtparam=pciex1_gen=3` is in `/boot/firmware/config.txt` under `[all]` and reboot |
 | GStreamer pipeline fails to open | Check camera connection with `rpicam-hello` first; ensure Hailo GStreamer plugins are installed |
