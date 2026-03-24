@@ -150,7 +150,7 @@ if lsmod 2>/dev/null | grep -q hailo_pci; then
     DRIVER_LOADED=true
 else
     fail "hailo_pci kernel module is NOT loaded"
-    
+
     if ! dpkg -s dkms &>/dev/null || [[ ! -e "/lib/modules/$(uname -r)/build" ]]; then
         warn "DKMS or kernel headers are missing. The driver must be compiled for your current kernel ($(uname -r))."
         add_fix "Install DKMS, kernel headers, and rebuild Hailo PCIe driver" \
@@ -158,6 +158,28 @@ else
     else
         add_fix "Load hailo_pci kernel module (or rebuild if it fails)" \
                 "sudo modprobe hailo_pci || (echo 'Failed to load. Rebuilding driver...' && sudo apt install --reinstall -y hailort-pcie-driver && sudo modprobe hailo_pci)"
+    fi
+fi
+
+# DKMS status check
+if command -v dkms &>/dev/null; then
+    DKMS_STATUS=$(dkms status 2>/dev/null | grep -i hailo)
+    if [[ -n "$DKMS_STATUS" ]]; then
+        info "DKMS: $DKMS_STATUS"
+        if echo "$DKMS_STATUS" | grep -q "installed"; then
+            DKMS_KERNEL=$(echo "$DKMS_STATUS" | grep -oP '\d+\.\d+\.\S+' | head -1)
+            if [[ -n "$DKMS_KERNEL" ]] && [[ "$DKMS_KERNEL" != "$(uname -r)" ]]; then
+                warn "DKMS module built for $DKMS_KERNEL but running kernel is $(uname -r)"
+                add_fix "Rebuild Hailo DKMS module for current kernel $(uname -r)" \
+                        "sudo dkms remove hailo/4.23.0 --all 2>/dev/null; sudo dkms install hailo/4.23.0 -k $(uname -r) && sudo modprobe -r hailo_pci 2>/dev/null; sudo modprobe hailo_pci"
+            fi
+        elif echo "$DKMS_STATUS" | grep -q "added"; then
+            warn "DKMS module is added but NOT built for any kernel"
+            add_fix "Build and install Hailo DKMS module for kernel $(uname -r)" \
+                    "sudo dkms install hailo/4.23.0 -k $(uname -r) && sudo modprobe -r hailo_pci 2>/dev/null; sudo modprobe hailo_pci"
+        fi
+    else
+        warn "No Hailo module found in DKMS"
     fi
 fi
 
@@ -185,29 +207,61 @@ else
         if [[ -n "$HAILO_PCI_ID" ]]; then
             VENDOR_ID=$(echo "$HAILO_PCI_ID" | cut -d: -f1)
             DEVICE_ID=$(echo "$HAILO_PCI_ID" | cut -d: -f2)
-            warn "Hardware ID ($VENDOR_ID:$DEVICE_ID) might not be on the driver allowlist."
         fi
 
-        if [[ -d /sys/bus/pci/drivers/hailo_pci ]]; then
-            # Driver registered with PCI subsystem — try new_id binding
-            if [[ -n "$VENDOR_ID" ]] && [[ -n "$DEVICE_ID" ]]; then
-                add_fix "Dynamically bind the PCIe device to the hailo_pci driver" \
+        # Check if the driver's compiled PCI ID table includes this device
+        DRIVER_HAS_ID=unknown
+        if [[ -n "$DEVICE_ID" ]]; then
+            HAILO_MOD_PATH=$(modinfo hailo_pci 2>/dev/null | grep "^filename:" | awk '{print $2}')
+            if [[ -n "$HAILO_MOD_PATH" ]] && [[ -f "$HAILO_MOD_PATH" ]]; then
+                # Check the module's alias list for the device ID
+                if modinfo hailo_pci 2>/dev/null | grep -qi "alias.*${DEVICE_ID}"; then
+                    DRIVER_HAS_ID=yes
+                else
+                    DRIVER_HAS_ID=no
+                fi
+            fi
+        fi
+
+        if [[ "$DRIVER_HAS_ID" == "no" ]]; then
+            fail "Driver 4.23.0 does NOT support device ID $VENDOR_ID:$DEVICE_ID (Hailo-10H)"
+            info "The installed hailort-pcie-driver does not have this PCIe ID in its device table."
+            info "You may need a newer driver version that supports Hailo-10H."
+            # Try new_id as a workaround regardless of sysfs state
+            if [[ -d /sys/bus/pci/drivers/hailo_pci ]]; then
+                add_fix "Dynamically add device ID to hailo_pci driver (workaround)" \
                         "echo \"$VENDOR_ID $DEVICE_ID\" | sudo tee /sys/bus/pci/drivers/hailo_pci/new_id >/dev/null"
+            else
+                add_fix "Reload driver and dynamically add device ID (workaround)" \
+                        "sudo modprobe -r hailo_pci 2>/dev/null; sudo modprobe hailo_pci && echo \"$VENDOR_ID $DEVICE_ID\" | sudo tee /sys/bus/pci/drivers/hailo_pci/new_id >/dev/null"
+            fi
+            add_fix "Check for newer hailo-all package with Hailo-10H support" \
+                    "sudo apt update && apt-cache policy hailo-all hailort-pcie-driver"
+        elif [[ "$DRIVER_HAS_ID" == "yes" ]]; then
+            warn "Hardware ID ($VENDOR_ID:$DEVICE_ID) is in the driver but device was not probed."
+            if [[ -d /sys/bus/pci/drivers/hailo_pci ]]; then
+                if [[ -n "$HAILO_BDF" ]] && [[ ! -e "/sys/bus/pci/drivers/hailo_pci/$HAILO_BDF" ]]; then
+                    add_fix "Manually bind PCIe device $HAILO_BDF to hailo_pci driver" \
+                            "echo '$HAILO_BDF' | sudo tee /sys/bus/pci/drivers/hailo_pci/bind >/dev/null 2>&1 || (echo '$HAILO_BDF' | sudo tee /sys/bus/pci/devices/$HAILO_BDF/driver/unbind >/dev/null 2>&1 && echo '$HAILO_BDF' | sudo tee /sys/bus/pci/drivers/hailo_pci/bind >/dev/null)"
+                fi
+            else
+                info "Driver module loaded but did not register with PCIe subsystem."
+                add_fix "Reinstall and reload the Hailo PCIe driver for kernel $(uname -r)" \
+                        "sudo modprobe -r hailo_pci && sudo apt install --reinstall -y hailort-pcie-driver && sudo modprobe hailo_pci"
             fi
         else
-            # Driver loaded but did NOT register with PCI subsystem — module needs reload
-            info "Driver module loaded but did not register with PCIe subsystem."
-            info "This typically means the driver version doesn't match the kernel."
-            add_fix "Reinstall and reload the Hailo PCIe driver for kernel $(uname -r)" \
-                    "sudo modprobe -r hailo_pci && sudo apt install --reinstall -y hailort-pcie-driver && sudo modprobe hailo_pci"
-        fi
-
-        # Also offer manual PCI rebind as a fallback if BDF is known
-        if [[ -n "$HAILO_BDF" ]] && [[ -d /sys/bus/pci/drivers/hailo_pci ]]; then
-            # Check if device is not already bound to this driver
-            if [[ ! -e "/sys/bus/pci/drivers/hailo_pci/$HAILO_BDF" ]]; then
-                add_fix "Manually bind PCIe device $HAILO_BDF to hailo_pci driver" \
-                        "echo '$HAILO_BDF' | sudo tee /sys/bus/pci/drivers/hailo_pci/bind >/dev/null 2>&1 || (echo '$HAILO_BDF' | sudo tee /sys/bus/pci/devices/$HAILO_BDF/driver/unbind >/dev/null 2>&1 && echo '$HAILO_BDF' | sudo tee /sys/bus/pci/drivers/hailo_pci/bind >/dev/null)"
+            # Could not determine — fall back to previous logic
+            warn "Hardware ID ($VENDOR_ID:$DEVICE_ID) might not be on the driver allowlist."
+            if [[ -d /sys/bus/pci/drivers/hailo_pci ]]; then
+                if [[ -n "$VENDOR_ID" ]] && [[ -n "$DEVICE_ID" ]]; then
+                    add_fix "Dynamically bind the PCIe device to the hailo_pci driver" \
+                            "echo \"$VENDOR_ID $DEVICE_ID\" | sudo tee /sys/bus/pci/drivers/hailo_pci/new_id >/dev/null"
+                fi
+            else
+                info "Driver module loaded but did not register with PCIe subsystem."
+                info "This typically means the driver version doesn't match the kernel."
+                add_fix "Reinstall and reload the Hailo PCIe driver for kernel $(uname -r)" \
+                        "sudo modprobe -r hailo_pci && sudo apt install --reinstall -y hailort-pcie-driver && sudo modprobe hailo_pci"
             fi
         fi
     fi
@@ -424,15 +478,19 @@ if [[ ${#FIXES[@]} -gt 0 ]]; then
             echo ""
             echo -e "  ${BOLD}[$((i+1))/${#FIXES[@]}] ${FIXES[$i]}${NC}"
             echo "  Running: ${FIX_CMDS[$i]}"
-            eval "${FIX_CMDS[$i]}"
+            FIX_OUTPUT=$(eval "${FIX_CMDS[$i]}" 2>&1)
             exit_code=$?
+            echo "$FIX_OUTPUT"
             if [[ $exit_code -eq 0 ]]; then
                 echo -e "  ${GREEN}Done.${NC}"
             else
                 echo -e "  ${RED}Failed (exit code: $exit_code)${NC}"
             fi
             # Check if this fix likely needs a reboot
-            if echo "${FIX_CMDS[$i]}" | grep -q "config.txt\|usermod"; then
+            if echo "${FIX_CMDS[$i]}" | grep -q "config.txt\|usermod\|hailort-pcie-driver"; then
+                NEED_REBOOT=true
+            fi
+            if echo "$FIX_OUTPUT" | grep -qi "reboot"; then
                 NEED_REBOOT=true
             fi
         done
@@ -453,14 +511,15 @@ if [[ ${#FIXES[@]} -gt 0 ]]; then
             echo ""
             echo -e "  ${BOLD}${FIXES[$idx]}${NC}"
             echo "  Running: ${FIX_CMDS[$idx]}"
-            eval "${FIX_CMDS[$idx]}"
+            FIX_OUTPUT=$(eval "${FIX_CMDS[$idx]}" 2>&1)
             exit_code=$?
+            echo "$FIX_OUTPUT"
             if [[ $exit_code -eq 0 ]]; then
                 echo -e "  ${GREEN}Done.${NC}"
             else
                 echo -e "  ${RED}Failed (exit code: $exit_code)${NC}"
             fi
-            if echo "${FIX_CMDS[$idx]}" | grep -q "config.txt\|usermod"; then
+            if echo "${FIX_CMDS[$idx]}" | grep -q "config.txt\|usermod\|hailort-pcie-driver" || echo "$FIX_OUTPUT" | grep -qi "reboot"; then
                 echo ""
                 echo "This change requires a reboot to take effect."
                 echo -n "Reboot now? [y/N] "
