@@ -439,9 +439,8 @@ def open_camera(source: str, width: int, height: int) -> cv2.VideoCapture:
 def run(args: argparse.Namespace) -> None:
     try:
         from hailo_platform import (
-            HEF, VDevice, HailoStreamInterface, FormatType,
+            HEF, VDevice, FormatType,
             InferVStreams, InputVStreamParams, OutputVStreamParams,
-            HailoSchedulingAlgorithm,
         )
     except ImportError:
         log.error(
@@ -489,10 +488,7 @@ def run(args: argparse.Namespace) -> None:
     input_h, input_w = input_shape[1], input_shape[2]
     input_name = input_vstream_infos[0].name
 
-    params = VDevice.create_params()
-    params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
-
-    with VDevice(params) as vdevice:
+    with VDevice() as vdevice:
         network_group = vdevice.configure(hef)[0]
 
         input_vstream_params = InputVStreamParams.make(
