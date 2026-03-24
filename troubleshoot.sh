@@ -181,12 +181,34 @@ else
         info "Driver is not loaded — fix that first (see above)"
     else
         HAILO_PCI_ID=$(lspci -nn 2>/dev/null | grep -i hailo | grep -o '\[[0-9a-fA-F]\{4\}:[0-9a-fA-F]\{4\}\]' | head -1 | tr -d '[]')
+        HAILO_BDF=$(lspci 2>/dev/null | grep -i hailo | awk '{print $1}' | head -1)
         if [[ -n "$HAILO_PCI_ID" ]]; then
             VENDOR_ID=$(echo "$HAILO_PCI_ID" | cut -d: -f1)
             DEVICE_ID=$(echo "$HAILO_PCI_ID" | cut -d: -f2)
             warn "Hardware ID ($VENDOR_ID:$DEVICE_ID) might not be on the driver allowlist."
-            add_fix "Dynamically bind the PCIe device to the hailo_pci driver" \
-                    "echo \"$VENDOR_ID $DEVICE_ID\" | sudo tee /sys/bus/pci/drivers/hailo_pci/new_id >/dev/null"
+        fi
+
+        if [[ -d /sys/bus/pci/drivers/hailo_pci ]]; then
+            # Driver registered with PCI subsystem — try new_id binding
+            if [[ -n "$VENDOR_ID" ]] && [[ -n "$DEVICE_ID" ]]; then
+                add_fix "Dynamically bind the PCIe device to the hailo_pci driver" \
+                        "echo \"$VENDOR_ID $DEVICE_ID\" | sudo tee /sys/bus/pci/drivers/hailo_pci/new_id >/dev/null"
+            fi
+        else
+            # Driver loaded but did NOT register with PCI subsystem — module needs reload
+            info "Driver module loaded but did not register with PCIe subsystem."
+            info "This typically means the driver version doesn't match the kernel."
+            add_fix "Reinstall and reload the Hailo PCIe driver for kernel $(uname -r)" \
+                    "sudo modprobe -r hailo_pci && sudo apt install --reinstall -y hailort-pcie-driver && sudo modprobe hailo_pci"
+        fi
+
+        # Also offer manual PCI rebind as a fallback if BDF is known
+        if [[ -n "$HAILO_BDF" ]] && [[ -d /sys/bus/pci/drivers/hailo_pci ]]; then
+            # Check if device is not already bound to this driver
+            if [[ ! -e "/sys/bus/pci/drivers/hailo_pci/$HAILO_BDF" ]]; then
+                add_fix "Manually bind PCIe device $HAILO_BDF to hailo_pci driver" \
+                        "echo '$HAILO_BDF' | sudo tee /sys/bus/pci/drivers/hailo_pci/bind >/dev/null 2>&1 || (echo '$HAILO_BDF' | sudo tee /sys/bus/pci/devices/$HAILO_BDF/driver/unbind >/dev/null 2>&1 && echo '$HAILO_BDF' | sudo tee /sys/bus/pci/drivers/hailo_pci/bind >/dev/null)"
+            fi
         fi
     fi
 fi
