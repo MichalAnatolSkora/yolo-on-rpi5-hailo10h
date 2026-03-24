@@ -166,17 +166,23 @@ if command -v dkms &>/dev/null; then
     DKMS_STATUS=$(dkms status 2>/dev/null | grep -i hailo)
     if [[ -n "$DKMS_STATUS" ]]; then
         info "DKMS: $DKMS_STATUS"
+        # Parse DKMS status: "module_name/version, kernel, arch: status"
+        # e.g. "hailo_pci/4.23.0, 6.12.75+rpt-rpi-2712, aarch64: installed"
+        DKMS_MOD_NAME=$(echo "$DKMS_STATUS" | head -1 | cut -d'/' -f1 | xargs)
+        DKMS_MOD_VER=$(echo "$DKMS_STATUS" | head -1 | cut -d'/' -f2 | cut -d',' -f1 | xargs)
+        DKMS_KERNEL=$(echo "$DKMS_STATUS" | head -1 | cut -d',' -f2 | xargs)
         if echo "$DKMS_STATUS" | grep -q "installed"; then
-            DKMS_KERNEL=$(echo "$DKMS_STATUS" | grep -oP '\d+\.\d+\.\S+' | head -1)
             if [[ -n "$DKMS_KERNEL" ]] && [[ "$DKMS_KERNEL" != "$(uname -r)" ]]; then
                 warn "DKMS module built for $DKMS_KERNEL but running kernel is $(uname -r)"
                 add_fix "Rebuild Hailo DKMS module for current kernel $(uname -r)" \
-                        "sudo dkms remove hailo/4.23.0 --all 2>/dev/null; sudo dkms install hailo/4.23.0 -k $(uname -r) && sudo modprobe -r hailo_pci 2>/dev/null; sudo modprobe hailo_pci"
+                        "sudo dkms remove ${DKMS_MOD_NAME}/${DKMS_MOD_VER} --all 2>/dev/null; sudo dkms install ${DKMS_MOD_NAME}/${DKMS_MOD_VER} -k $(uname -r) && sudo modprobe -r hailo_pci 2>/dev/null; sudo modprobe hailo_pci"
+            else
+                pass "DKMS module built for current kernel $(uname -r)"
             fi
         elif echo "$DKMS_STATUS" | grep -q "added"; then
             warn "DKMS module is added but NOT built for any kernel"
             add_fix "Build and install Hailo DKMS module for kernel $(uname -r)" \
-                    "sudo dkms install hailo/4.23.0 -k $(uname -r) && sudo modprobe -r hailo_pci 2>/dev/null; sudo modprobe hailo_pci"
+                    "sudo dkms install ${DKMS_MOD_NAME:-hailo_pci}/${DKMS_MOD_VER:-4.23.0} -k $(uname -r) && sudo modprobe -r hailo_pci 2>/dev/null; sudo modprobe hailo_pci"
         fi
     else
         warn "No Hailo module found in DKMS"
