@@ -47,7 +47,8 @@ Three model sizes are available:
 |---|---|---|---|
 | YOLOv11n (nano) | `./install_yolo11.sh` | ~4.9 MB | Fastest, good for real-time on RPi 5 |
 | YOLOv11m (medium) | `./install_yolo11m.sh` | ~20 MB | Balanced accuracy and speed |
-| YOLOv11l (large) | `./install_yolo11l.sh` | ~25 MB | Most accurate, slower |
+| YOLOv11l (large) | `./install_yolo11l.sh` | ~25 MB | High accuracy, slower |
+| YOLOv11x (extra-large) | `./install_yolo11x.sh` | ~46 MB | Highest accuracy, slowest |
 
 Install and run:
 
@@ -60,9 +61,13 @@ python run_yolo11.py --display
 ./install_yolo11m.sh
 python run_yolo11.py --model ~/hailo_models/yolov11m.hef --display
 
-# Large (highest accuracy)
+# Large (high accuracy)
 ./install_yolo11l.sh
 python run_yolo11.py --model ~/hailo_models/yolov11l.hef --display
+
+# Extra-large (highest accuracy — may not hit real-time FPS)
+./install_yolo11x.sh
+python run_yolo11.py --model ~/hailo_models/yolov11x.hef --display
 ```
 
 Each install script downloads a pre-compiled HEF from Hailo Model Zoo and sets up a Python virtual environment. Idempotent — safe to re-run. All share the same venv and dependencies. There is a single `run_yolo11.py` runner — just pass `--model` to switch between sizes.
