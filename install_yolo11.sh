@@ -7,7 +7,6 @@ set -euo pipefail
 MODEL_DIR="${HOME}/hailo_models"
 MODEL_NAME="yolov11n"
 HEF_FILE="${MODEL_DIR}/${MODEL_NAME}.hef"
-HEF_URL="https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.1.0/hailo10h/${MODEL_NAME}.hef"
 VENV_DIR="${HOME}/hailo_venv"
 
 log() {
@@ -29,20 +28,23 @@ if [[ $EUID -eq 0 ]]; then
     error_exit "Do not run this script as root. It will use sudo when needed."
 fi
 
-# Detect Hailo-10H (45c4) vs Hailo-8 (2864) and check correct package
+# Auto-detect Hailo device: Hailo-10H (45c4) vs Hailo-8 (2864/Hailo-8L)
 HAILO_DEV_ID=$(lspci -nn 2>/dev/null | grep -i hailo | grep -o '\[[0-9a-fA-F]\{4\}:[0-9a-fA-F]\{4\}\]' | head -1 | tr -d '[]' | cut -d: -f2)
 if [[ "$HAILO_DEV_ID" == "45c4" ]]; then
+    HAILO_ARCH="hailo10h"
     HAILO_PKG="hailo-h10-all"
 else
+    HAILO_ARCH="hailo8"
     HAILO_PKG="hailo-all"
 fi
+HEF_URL="https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.1.0/${HAILO_ARCH}/${MODEL_NAME}.hef"
 
 if ! dpkg -s "$HAILO_PKG" &>/dev/null; then
     error_exit "$HAILO_PKG is not installed. Run ./install_hailo.sh first."
 fi
 
 echo "=========================================================="
-echo " YOLO Model Setup for Hailo-10H (v5.1.1 Compatible)      "
+echo " YOLO Model Setup for ${HAILO_ARCH} (v5.1.1 Compatible)  "
 echo "=========================================================="
 
 mkdir -p "$MODEL_DIR"
@@ -73,10 +75,36 @@ fi
 # --- Step 3: Download pre-compiled HEF ---
 
 log "[3/3] Checking HEF model..."
+NEED_DOWNLOAD=false
 if [[ -f "$HEF_FILE" ]]; then
-    log " -> HEF model already exists: $HEF_FILE"
+    log " -> HEF model exists: $HEF_FILE — verifying architecture..."
+    # Quick check: try to load the HEF to detect architecture mismatch
+    ARCH_OK=$(python3 -c "
+from hailo_platform import HEF, VDevice
+try:
+    hef = HEF('${HEF_FILE}')
+    with VDevice() as vd:
+        vd.configure(hef)
+    print('ok')
+except Exception as e:
+    if 'HAILO_NOT_IMPLEMENTED' in str(e) or 'error: 7' in str(e):
+        print('mismatch')
+    else:
+        print('ok')
+" 2>/dev/null || echo "skip")
+    if [[ "$ARCH_OK" == "mismatch" ]]; then
+        log " -> WARNING: Existing HEF is compiled for the wrong architecture!"
+        log "    Re-downloading for ${HAILO_ARCH}..."
+        rm -f "$HEF_FILE"
+        NEED_DOWNLOAD=true
+    else
+        log " -> HEF model looks compatible."
+    fi
 else
-    log " -> Downloading pre-compiled ${MODEL_NAME} HEF for Hailo-10H..."
+    NEED_DOWNLOAD=true
+fi
+if [[ "$NEED_DOWNLOAD" == true ]]; then
+    log " -> Downloading pre-compiled ${MODEL_NAME} HEF for ${HAILO_ARCH}..."
     log "    Source: Hailo Model Zoo (compiled with DFC v5.1.0, compatible with HailoRT 5.1.1)"
 
     python3 - <<PYEOF

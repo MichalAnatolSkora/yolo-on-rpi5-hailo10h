@@ -240,7 +240,17 @@ def run(args: argparse.Namespace) -> None:
 
     # --- Configure Hailo device ---
     with VDevice() as vdevice:
-        network_group = vdevice.configure(hef)[0]
+        try:
+            network_group = vdevice.configure(hef)[0]
+        except Exception as e:
+            if "HAILO_NOT_IMPLEMENTED" in str(e) or "error: 7" in str(e):
+                log.error(
+                    "HEF model is not compatible with this Hailo device. "
+                    "This usually means the .hef was compiled for a different architecture "
+                    "(e.g. hailo8 vs hailo10h). Download the correct HEF for your device."
+                )
+                sys.exit(1)
+            raise
 
         input_vstream_params = InputVStreamParams.make(
             network_group, format_type=FormatType.UINT8

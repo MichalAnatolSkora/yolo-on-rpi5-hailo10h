@@ -319,7 +319,7 @@ if [[ -e /dev/hailo0 ]] && command -v hailortcli &>/dev/null; then
         fail "Firmware identify timed out (10s)"
         info "Device may be hung"
         add_fix "Reload Hailo kernel driver" \
-                "sudo modprobe -r hailo_pci && sudo modprobe hailo_pci"
+                "sudo modprobe -r $EXPECTED_DRIVER && sudo modprobe $EXPECTED_DRIVER"
     else
         fail "Firmware identify failed (exit code: $FW_EXIT)"
         if [[ -n "$FW_OUTPUT" ]]; then
@@ -328,7 +328,7 @@ if [[ -e /dev/hailo0 ]] && command -v hailortcli &>/dev/null; then
             done
         fi
         add_fix "Reload Hailo kernel driver" \
-                "sudo modprobe -r hailo_pci && sudo modprobe hailo_pci"
+                "sudo modprobe -r $EXPECTED_DRIVER && sudo modprobe $EXPECTED_DRIVER"
     fi
 else
     if [[ ! -e /dev/hailo0 ]]; then
@@ -372,7 +372,7 @@ except Exception as e:
         else
             info "No processes found holding /dev/hailo0"
             add_fix "Reload Hailo kernel driver to reset device" \
-                    "sudo modprobe -r hailo_pci && sudo modprobe hailo_pci"
+                    "sudo modprobe -r $EXPECTED_DRIVER && sudo modprobe $EXPECTED_DRIVER"
         fi
     else
         fail "VDevice failed: $DEVICE_CHECK"
@@ -387,6 +387,7 @@ echo ""
 echo "--- Model Files ---"
 
 MODEL_DIR="${HOME}/hailo_models"
+DETECTED_ARCH=$(if $IS_HAILO10H; then echo "hailo10h"; else echo "hailo8"; fi)
 if [[ -d "$MODEL_DIR" ]]; then
     HEF_COUNT=$(find "$MODEL_DIR" -name "*.hef" -type f 2>/dev/null | wc -l)
     if [[ "$HEF_COUNT" -gt 0 ]]; then
@@ -395,14 +396,36 @@ if [[ -d "$MODEL_DIR" ]]; then
             SIZE=$(du -h "$hef" 2>/dev/null | cut -f1)
             echo "    $hef ($SIZE)"
         done
+        # Check HEF architecture compatibility
+        if python3 -c "import hailo_platform" &>/dev/null; then
+            find "$MODEL_DIR" -name "*.hef" -type f 2>/dev/null | while IFS= read -r hef; do
+                HEF_CHECK=$(python3 -c "
+from hailo_platform import HEF
+try:
+    h = HEF('$hef')
+    # Try to get target device from HEF metadata
+    print('ok')
+except Exception as e:
+    if 'HAILO_NOT_IMPLEMENTED' in str(e) or 'error: 7' in str(e):
+        print('wrong_arch')
+    else:
+        print('ok')
+" 2>&1)
+                if [[ "$HEF_CHECK" == "wrong_arch" ]]; then
+                    warn "$(basename "$hef") may be compiled for the wrong architecture (not $DETECTED_ARCH)"
+                    add_fix "Re-download $(basename "$hef") for $DETECTED_ARCH" \
+                            "./install_yolo11.sh"
+                fi
+            done
+        fi
     else
         warn "No .hef models found in $MODEL_DIR"
-        add_fix "Download YOLOv12n model for Hailo-10H" \
+        add_fix "Download YOLO model for $DETECTED_ARCH" \
                 "./install_yolo11.sh"
     fi
 else
     warn "Model directory $MODEL_DIR does not exist"
-    add_fix "Download YOLOv12n model for Hailo-10H" \
+    add_fix "Download YOLO model for $DETECTED_ARCH" \
             "./install_yolo11.sh"
 fi
 
