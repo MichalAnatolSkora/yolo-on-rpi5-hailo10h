@@ -80,11 +80,14 @@ if [[ -f "$HEF_FILE" ]]; then
     log " -> HEF model exists: $HEF_FILE — verifying architecture..."
     # Quick check: try to load the HEF to detect architecture mismatch
     ARCH_OK=$(python3 -c "
-from hailo_platform import HEF, VDevice
+from hailo_platform import VDevice, HailoSchedulingAlgorithm
 try:
-    hef = HEF('${HEF_FILE}')
-    with VDevice() as vd:
-        vd.configure(hef)
+    params = VDevice.create_params()
+    params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+    with VDevice(params) as vd:
+        infer_model = vd.create_infer_model('${HEF_FILE}')
+        with infer_model.configure() as cfg:
+            pass
     print('ok')
 except Exception as e:
     if 'HAILO_NOT_IMPLEMENTED' in str(e) or 'error: 7' in str(e):

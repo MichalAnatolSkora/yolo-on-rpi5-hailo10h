@@ -348,7 +348,7 @@ if [[ -e /dev/hailo0 ]] && python3 -c "import hailo_platform" &>/dev/null; then
 from hailo_platform import VDevice, HailoSchedulingAlgorithm
 try:
     params = VDevice.create_params()
-    params.scheduling_algorithm = HailoSchedulingAlgorithm.NONE
+    params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
     with VDevice(params) as vd:
         print('OK')
 except Exception as e:
