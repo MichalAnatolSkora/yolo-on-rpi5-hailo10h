@@ -239,16 +239,18 @@ class IOUTracker:
 
 
 class VehicleCounter:
-    """Count vehicles crossing a horizontal line."""
+    """Count vehicles entering a horizontal counting zone."""
 
-    def __init__(self, line_y_ratio: float = 0.5, direction: str = "down"):
+    def __init__(self, line_y_ratio: float = 0.5, direction: str = "down", margin: int = 40):
         """
         Args:
-            line_y_ratio: Y position of counting line as fraction of frame height (0-1).
+            line_y_ratio: Y position of counting zone center as fraction of frame height (0-1).
             direction: "down", "up", or "both".
+            margin: Half-height of counting zone in pixels. Object entering the zone is counted.
         """
         self.line_y_ratio = line_y_ratio
         self.direction = direction
+        self.margin = margin
         self.prev_centroids: dict[int, float] = {}  # track_id -> previous cy
         self.counted_ids: set[int] = set()
         self.count_down = 0
@@ -265,11 +267,13 @@ class VehicleCounter:
 
     def update(self, tracked: dict[int, tuple], frame_h: int) -> list[int]:
         """
-        Check which tracked vehicles crossed the line this frame.
+        Check which tracked vehicles entered the counting zone this frame.
 
         Returns list of track_ids that just crossed.
         """
         line_y = int(self.line_y_ratio * frame_h)
+        zone_top = line_y - self.margin
+        zone_bot = line_y + self.margin
         crossed = []
 
         for track_id, det in tracked.items():
@@ -278,15 +282,15 @@ class VehicleCounter:
             if track_id in self.prev_centroids and track_id not in self.counted_ids:
                 prev_cy = self.prev_centroids[track_id]
 
-                # Crossed downward
-                if prev_cy < line_y <= cy:
+                # Crossed downward: was above zone, now inside or below
+                if prev_cy < zone_top and cy >= zone_top:
                     if self.direction in ("down", "both"):
                         self.count_down += 1
                         self.counted_ids.add(track_id)
                         crossed.append(track_id)
 
-                # Crossed upward
-                elif prev_cy > line_y >= cy:
+                # Crossed upward: was below zone, now inside or above
+                elif prev_cy > zone_bot and cy <= zone_bot:
                     if self.direction in ("up", "both"):
                         self.count_up += 1
                         self.counted_ids.add(track_id)
@@ -344,11 +348,16 @@ def draw_tracking(
     counter: VehicleCounter,
     crossed_ids: list[int],
 ) -> np.ndarray:
-    """Draw tracked vehicles, counting line, and count overlay."""
+    """Draw tracked vehicles, counting zone, and count overlay."""
     h, w = frame.shape[:2]
     line_y = int(counter.line_y_ratio * h)
+    zone_top = line_y - counter.margin
+    zone_bot = line_y + counter.margin
 
-    # Draw counting line
+    # Draw counting zone (semi-transparent red band)
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, zone_top), (w, zone_bot), (0, 0, 255), -1)
+    cv2.addWeighted(overlay, 0.2, frame, 0.8, 0, frame)
     cv2.line(frame, (0, line_y), (w, line_y), (0, 0, 255), 2)
 
     for track_id, det in tracked.items():
@@ -419,6 +428,7 @@ def run(args: argparse.Namespace) -> None:
     counter = VehicleCounter(
         line_y_ratio=args.line_y,
         direction=args.direction,
+        margin=args.line_margin,
     )
     log.info(
         "Tracking config: line_y=%.0f%%, direction=%s, min_iou=%.2f, max_dist=%.0f, max_disappeared=%d",
@@ -554,6 +564,10 @@ def main() -> None:
     parser.add_argument(
         "--line-y", type=float, default=0.5,
         help="Counting line Y position as fraction of frame height (0.0-1.0, default: 0.5)",
+    )
+    parser.add_argument(
+        "--line-margin", type=int, default=40,
+        help="Half-height of counting zone in pixels (default: 40)",
     )
     parser.add_argument(
         "--direction", choices=["down", "up", "both"], default="down",
