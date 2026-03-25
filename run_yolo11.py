@@ -188,9 +188,8 @@ def open_camera(source: str, width: int, height: int) -> cv2.VideoCapture:
     if source == "picam":
         pipeline = (
             f"libcamerasrc ! "
-            f"video/x-raw,width={width},height={height} ! "
+            f"video/x-raw, width={width}, height={height}, format=RGB ! "
             f"videoconvert ! "
-            f"video/x-raw,format=BGR ! "
             f"appsink sync=false max-buffers=1 drop=true"
         )
         return cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
