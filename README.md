@@ -43,29 +43,39 @@ Look for `Speed 8GT/s` which indicates Gen 3 is active (Gen 2 would show `5GT/s`
 
 Two model sizes are available — **nano** (faster, smaller) and **medium** (more accurate, slower):
 
-| Model | Script | Size | Notes |
+| Model | Install script | Size | Notes |
 |---|---|---|---|
 | YOLOv11n (nano) | `./install_yolo11.sh` | ~4.9 MB | Faster, good for real-time on RPi 5 |
 | YOLOv11m (medium) | `./install_yolo11m.sh` | ~20 MB | More accurate, heavier |
 
-Install and run in two commands:
+Install and run:
 
 ```bash
 # Nano (default — recommended for real-time)
 ./install_yolo11.sh
-python run_yolo11.py --model ~/hailo_models/yolov11n.hef --display
+python run_yolo11.py --display
 
 # Medium (higher accuracy)
 ./install_yolo11m.sh
-python run_yolo11m.py --display
+python run_yolo11.py --model ~/hailo_models/yolov11m.hef --display
 ```
 
-Each install script downloads a pre-compiled HEF from Hailo Model Zoo and sets up a Python virtual environment. Idempotent — safe to re-run. Both share the same venv and dependencies.
+Each install script downloads a pre-compiled HEF from Hailo Model Zoo and sets up a Python virtual environment. Idempotent — safe to re-run. Both share the same venv and dependencies. There is a single `run_yolo11.py` runner — just pass `--model` to switch between nano and medium.
 
-**Options:**
+**Display options:**
+
+| Flag | Resolution |
+|---|---|
+| `--display-small` | 640x480 |
+| `--display` | 1024x768 |
+| `--display-large` | 1280x720 |
+
+Without any display flag the script runs headless (no preview window).
+
+**Other options:**
 ```bash
-python run_yolo11.py --model ~/hailo_models/yolov11n.hef --display --source /dev/video0  # USB camera
-python run_yolo11.py --model ~/hailo_models/yolov11n.hef --confidence 0.4 --iou 0.5      # headless (no window)
+python run_yolo11.py --display --source /dev/video0        # USB camera
+python run_yolo11.py --display-large --confidence 0.4      # large preview, lower threshold
 ```
 
 To find your USB camera device path: `ls /dev/video*` or `v4l2-ctl --list-devices`.

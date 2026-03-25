@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """
-Run YOLOv12 object detection via Hailo-10H NPU on a Raspberry Pi 5.
+Run YOLO object detection via Hailo-10H NPU on a Raspberry Pi 5.
 
-This script uses the Hailo Python API (HailoRT) directly instead of GStreamer,
-giving more control over pre/post-processing — useful for newer YOLO architectures
-like YOLOv12 where GStreamer post-process .so files may not yet be available.
+Uses the Hailo Python API (HailoRT) directly instead of GStreamer.
+Works with any YOLOv11 .hef model (nano, medium, etc.).
 
 Prerequisites:
-- A YOLOv12 .hef model compiled for Hailo-10H.
+- A YOLO .hef model compiled for Hailo-10H.
 - OpenCV (pip install opencv-python).
 - Hailo RT Python bindings (installed via hailo-all).
 - NumPy (pip install numpy).
 
 Usage:
-    python run_yolo11.py --model ~/hailo_models/yolov12n.hef
-    python run_yolo11.py --model ~/hailo_models/yolov12n.hef --source /dev/video0
-    python run_yolo11.py --model ~/hailo_models/yolov12n.hef --confidence 0.4
+    python run_yolo11.py --display                                        # yolov11n, 640x480
+    python run_yolo11.py --model ~/hailo_models/yolov11m.hef --display    # yolov11m
+    python run_yolo11.py --display-large --source /dev/video0             # 1280x720, USB cam
 """
 
 import argparse
@@ -307,13 +306,15 @@ def run(args: argparse.Namespace) -> None:
                         fps = cap.get(cv2.CAP_PROP_FPS) or 0
                         log.info("Detections: %d | Camera FPS: %.1f", len(detections), fps)
 
-                    if args.display:
-                        cv2.imshow("YOLO Hailo-10H", frame)
+                    if args.display_size:
+                        dw, dh = args.display_size
+                        show = cv2.resize(frame, (dw, dh)) if (frame.shape[1], frame.shape[0]) != (dw, dh) else frame
+                        cv2.imshow("YOLO Hailo-10H", show)
                         if cv2.waitKey(1) & 0xFF == ord("q"):
                             break
             finally:
                 cap.release()
-                if args.display:
+                if args.display_size:
                     cv2.destroyAllWindows()
                 log.info("Stopped.")
 
@@ -322,11 +323,14 @@ def main() -> None:
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
+    default_model = os.path.expanduser("~/hailo_models/yolov11n.hef")
+
     parser = argparse.ArgumentParser(
-        description="Run YOLOv12 object detection on Hailo-10H NPU"
+        description="Run YOLO object detection on Hailo-10H NPU"
     )
     parser.add_argument(
-        "--model", required=True, help="Path to YOLOv12 .hef model compiled for Hailo-10H"
+        "--model", default=default_model,
+        help="Path to YOLO .hef model (default: ~/hailo_models/yolov11n.hef)",
     )
     parser.add_argument(
         "--labels", default="", help="Path to class labels file (one per line). Defaults to COCO"
@@ -347,10 +351,21 @@ def main() -> None:
     parser.add_argument(
         "--iou", type=float, default=0.45, help="NMS IoU threshold (default: 0.45)"
     )
-    parser.add_argument(
-        "--display", action="store_true",
-        help="Show live preview window (requires a display/monitor)",
+
+    display_group = parser.add_mutually_exclusive_group()
+    display_group.add_argument(
+        "--display-small", action="store_const", dest="display_size", const=(640, 480),
+        help="Show preview at 640x480",
     )
+    display_group.add_argument(
+        "--display", action="store_const", dest="display_size", const=(1024, 768),
+        help="Show preview at 1024x768 (default size)",
+    )
+    display_group.add_argument(
+        "--display-large", action="store_const", dest="display_size", const=(1280, 720),
+        help="Show preview at 1280x720",
+    )
+
     parser.add_argument(
         "--verbose", action="store_true", help="Enable debug logging"
     )
