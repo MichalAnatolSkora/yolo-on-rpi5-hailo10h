@@ -245,6 +245,11 @@ def run(args: argparse.Namespace) -> None:
         infer_model.input().set_format_type(FormatType.UINT8)
         infer_model.output().set_format_type(FormatType.FLOAT32)
 
+        # Get correct output shape from infer_model (not hef vstream info,
+        # which omits NMS per-class count fields)
+        output_shape = infer_model.output().shape
+        log.info("InferModel output shape: %s", output_shape)
+
         with infer_model.configure() as configured_model:
             # --- Open camera ---
             log.info("Opening camera (source=%s)...", args.source)
@@ -266,17 +271,18 @@ def run(args: argparse.Namespace) -> None:
                     # Preprocess
                     input_data = preprocess(frame, input_h, input_w)
 
-                    # Create bindings and set input buffer
+                    # Create bindings and set input/output buffers
                     bindings = configured_model.create_bindings()
                     bindings.input().set_buffer(np.expand_dims(input_data, axis=0))
+                    output_buf = np.empty([1] + list(output_shape), dtype=np.float32)
+                    bindings.output().set_buffer(output_buf)
 
-                    # Run async inference (output buffers auto-allocated by HailoRT)
+                    # Run async inference
                     configured_model.wait_for_async_ready(timeout_ms=10000)
                     job = configured_model.run_async([bindings])
                     job.wait(timeout_ms=10000)
 
-                    # Retrieve output (auto-allocated with correct NMS buffer size)
-                    output = bindings.output().get_buffer()
+                    output = output_buf[0]
 
                     # Postprocess and draw
                     if has_nms:

@@ -438,14 +438,11 @@ def open_camera(source: str, width: int, height: int) -> cv2.VideoCapture:
 
 def run(args: argparse.Namespace) -> None:
     try:
-        from hailo_platform import (
-            HEF, VDevice, FormatType,
-            InferVStreams, InputVStreamParams, OutputVStreamParams,
-        )
+        from hailo_platform import HEF, VDevice, FormatType, HailoSchedulingAlgorithm
     except ImportError:
         log.error(
-            "hailo_platform not found. Ensure hailo-all is installed and you are "
-            "using system Python or a venv with --system-site-packages."
+            "hailo_platform not found. Ensure hailo-all / hailo-h10-all is installed "
+            "and you are using system Python or a venv with --system-site-packages."
         )
         sys.exit(1)
 
@@ -485,32 +482,34 @@ def run(args: argparse.Namespace) -> None:
     # Get input info for shape
     input_vstream_infos = hef.get_input_vstream_infos()
     input_shape = input_vstream_infos[0].shape
-    input_h, input_w = input_shape[1], input_shape[2]
-    input_name = input_vstream_infos[0].name
+    input_h, input_w = input_shape[0], input_shape[1]
 
-    with VDevice() as vdevice:
-        network_group = vdevice.configure(hef)[0]
+    # --- Configure Hailo device ---
+    params = VDevice.create_params()
+    params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
 
-        input_vstream_params = InputVStreamParams.make(
-            network_group, format_type=FormatType.UINT8
-        )
-        output_vstream_params = OutputVStreamParams.make(
-            network_group, format_type=FormatType.FLOAT32
-        )
+    with VDevice(params) as vdevice:
+        log.info("Creating InferModel (async API)...")
+        infer_model = vdevice.create_infer_model(args.model)
+        infer_model.input().set_format_type(FormatType.UINT8)
+        infer_model.output().set_format_type(FormatType.FLOAT32)
+
+        # Get correct output shape from infer_model (not hef vstream info)
+        output_shape = infer_model.output().shape
 
         log.info("Model input: %s | Classes: %d | NMS: %s", input_shape, len(labels), has_nms)
 
-        # Open camera
-        log.info("Opening camera (source=%s)...", args.source)
-        cap = open_camera(args.source, args.capture_width, args.capture_height)
-        if not cap.isOpened():
-            log.error("Could not open camera.")
-            sys.exit(1)
+        with infer_model.configure() as configured_model:
+            # Open camera
+            log.info("Opening camera (source=%s)...", args.source)
+            cap = open_camera(args.source, args.capture_width, args.capture_height)
+            if not cap.isOpened():
+                log.error("Could not open camera.")
+                sys.exit(1)
 
-        log.info("Running gesture recognition. Press 'q' to quit.")
-        prev_time = time.monotonic()
+            log.info("Running gesture recognition. Press 'q' to quit.")
+            prev_time = time.monotonic()
 
-        with InferVStreams(network_group, input_vstream_params, output_vstream_params) as pipeline:
             try:
                 while not _shutdown:
                     ret, frame = cap.read()
@@ -520,12 +519,18 @@ def run(args: argparse.Namespace) -> None:
 
                     # Inference
                     input_data = preprocess(frame, input_h, input_w)
-                    input_dict = {input_name: np.expand_dims(input_data, axis=0)}
-                    results = pipeline.infer(input_dict)
 
-                    # Get output (first output layer)
-                    output_name = list(results.keys())[0]
-                    output = results[output_name][0]  # remove batch dim
+                    bindings = configured_model.create_bindings()
+                    bindings.input().set_buffer(np.expand_dims(input_data, axis=0))
+                    output_buf = np.empty([1] + list(output_shape), dtype=np.float32)
+                    bindings.output().set_buffer(output_buf)
+
+                    # Run async inference
+                    configured_model.wait_for_async_ready(timeout_ms=10000)
+                    job = configured_model.run_async([bindings])
+                    job.wait(timeout_ms=10000)
+
+                    output = output_buf[0]
 
                     # Postprocess
                     if has_nms:
