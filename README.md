@@ -99,9 +99,12 @@ Track and count vehicles (cars, motorcycles, buses, trucks) crossing a configura
 python run_yolo11_tracking.py --display                      # count vehicles going down, line at 50%
 python run_yolo11_tracking.py --display --line-y 0.6         # line at 60% of frame height
 python run_yolo11_tracking.py --display --direction both     # count both directions
+python run_yolo11_tracking.py --display --all-classes        # track all objects (useful for testing)
 ```
 
 Uses the same model as `run_yolo11.py` — install it first with `./install_yolo11.sh`.
+
+By default only vehicles (car, motorcycle, bus, truck) are tracked. Use `--all-classes` to track all COCO objects — handy for testing indoors without vehicles.
 
 **Tracking options:**
 
@@ -111,6 +114,7 @@ Uses the same model as `run_yolo11.py` — install it first with `./install_yolo
 | `--direction` | `down` | Count direction: `down`, `up`, or `both` |
 | `--max-disappeared` | `30` | Frames before a lost track is removed |
 | `--max-distance` | `80` | Max pixel distance for centroid matching |
+| `--all-classes` | off | Track all detected objects, not just vehicles |
 
 All camera/display/model flags from `run_yolo11.py` are supported (`--display-large`, `--input-large`, `--source`, `--model`, `--confidence`, etc.).
 
