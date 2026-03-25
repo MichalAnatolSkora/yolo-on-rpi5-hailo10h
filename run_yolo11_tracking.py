@@ -254,7 +254,7 @@ def draw_tracking(
     if counter.direction == "both":
         count_text = f"Down: {counter.count_down}  Up: {counter.count_up}  Total: {counter.total}"
     else:
-        count_text = f"Vehicles: {counter.total}"
+        count_text = f"Count: {counter.total}"
 
     cv2.rectangle(frame, (10, 10), (10 + 300, 50), (0, 0, 0), -1)
     cv2.putText(frame, count_text, (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
@@ -365,8 +365,11 @@ def run(args: argparse.Namespace) -> None:
                             args.confidence, args.iou,
                         )
 
-                    # Filter to vehicles only
-                    vehicle_dets = [d for d in detections if d[5] in VEHICLE_CLASS_IDS]
+                    # Filter to vehicles only (unless --all-classes)
+                    if args.all_classes:
+                        vehicle_dets = detections
+                    else:
+                        vehicle_dets = [d for d in detections if d[5] in VEHICLE_CLASS_IDS]
 
                     # Track
                     tracked = tracker.update(vehicle_dets)
@@ -388,7 +391,7 @@ def run(args: argparse.Namespace) -> None:
                     if args.display_size:
                         dw, dh = args.display_size
                         show = cv2.resize(frame, (dw, dh)) if (frame.shape[1], frame.shape[0]) != (dw, dh) else frame
-                        cv2.imshow("Vehicle Tracking — Hailo-10H", show)
+                        cv2.imshow("Vehicle Tracking - Hailo-10H", show)
                         if cv2.waitKey(1) & 0xFF == ord("q"):
                             break
             finally:
@@ -415,6 +418,10 @@ def main() -> None:
     )
     parser.add_argument("--confidence", type=float, default=0.5, help="Confidence threshold")
     parser.add_argument("--iou", type=float, default=0.45, help="NMS IoU threshold")
+    parser.add_argument(
+        "--all-classes", action="store_true",
+        help="Track all detected objects, not just vehicles (useful for testing)",
+    )
 
     # Tracking parameters
     parser.add_argument(
