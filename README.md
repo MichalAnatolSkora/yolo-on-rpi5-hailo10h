@@ -41,14 +41,26 @@ Look for `Speed 8GT/s` which indicates Gen 3 is active (Gen 2 would show `5GT/s`
 
 ## YOLO Object Detection
 
+Two model sizes are available — **nano** (faster, smaller) and **medium** (more accurate, slower):
+
+| Model | Script | Size | Notes |
+|---|---|---|---|
+| YOLOv11n (nano) | `./install_yolo11.sh` | ~4.9 MB | Faster, good for real-time on RPi 5 |
+| YOLOv11m (medium) | `./install_yolo11m.sh` | ~20 MB | More accurate, heavier |
+
 Install and run in two commands:
 
 ```bash
-./install_yolo11.sh                                                       # downloads model + Python deps
-python run_yolo11.py --model ~/hailo_models/yolov11n.hef --display        # run with live preview
+# Nano (default — recommended for real-time)
+./install_yolo11.sh
+python run_yolo11.py --model ~/hailo_models/yolov11n.hef --display
+
+# Medium (higher accuracy)
+./install_yolo11m.sh
+python run_yolo11m.py --display
 ```
 
-The install script downloads a pre-compiled YOLOv11n HEF from Hailo Model Zoo and sets up a Python virtual environment. Idempotent — safe to re-run.
+Each install script downloads a pre-compiled HEF from Hailo Model Zoo and sets up a Python virtual environment. Idempotent — safe to re-run. Both share the same venv and dependencies.
 
 **Options:**
 ```bash
