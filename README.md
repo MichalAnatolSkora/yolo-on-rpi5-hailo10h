@@ -91,6 +91,29 @@ python run_yolo11.py --display --confidence 0.4                  # lower thresho
 
 To find your USB camera device path: `ls /dev/video*` or `v4l2-ctl --list-devices`.
 
+## Vehicle Tracking & Counting
+
+Track and count vehicles (cars, motorcycles, buses, trucks) crossing a configurable line using YOLOv11 detection + centroid tracking. No extra dependencies required.
+
+```bash
+python run_yolo11_tracking.py --display                      # count vehicles going down, line at 50%
+python run_yolo11_tracking.py --display --line-y 0.6         # line at 60% of frame height
+python run_yolo11_tracking.py --display --direction both     # count both directions
+```
+
+Uses the same model as `run_yolo11.py` — install it first with `./install_yolo11.sh`.
+
+**Tracking options:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--line-y` | `0.5` | Counting line Y position (0.0 = top, 1.0 = bottom) |
+| `--direction` | `down` | Count direction: `down`, `up`, or `both` |
+| `--max-disappeared` | `30` | Frames before a lost track is removed |
+| `--max-distance` | `80` | Max pixel distance for centroid matching |
+
+All camera/display/model flags from `run_yolo11.py` are supported (`--display-large`, `--input-large`, `--source`, `--model`, `--confidence`, etc.).
+
 ## Gesture Recognition
 
 Detects 18 hand gestures (HaGRID dataset) and maps them to configurable actions — shell commands, on-screen messages, CSV logging.
