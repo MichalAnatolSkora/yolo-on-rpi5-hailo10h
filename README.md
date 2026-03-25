@@ -41,12 +41,13 @@ Look for `Speed 8GT/s` which indicates Gen 3 is active (Gen 2 would show `5GT/s`
 
 ## YOLO Object Detection
 
-Two model sizes are available — **nano** (faster, smaller) and **medium** (more accurate, slower):
+Three model sizes are available:
 
 | Model | Install script | Size | Notes |
 |---|---|---|---|
-| YOLOv11n (nano) | `./install_yolo11.sh` | ~4.9 MB | Faster, good for real-time on RPi 5 |
-| YOLOv11m (medium) | `./install_yolo11m.sh` | ~20 MB | More accurate, heavier |
+| YOLOv11n (nano) | `./install_yolo11.sh` | ~4.9 MB | Fastest, good for real-time on RPi 5 |
+| YOLOv11m (medium) | `./install_yolo11m.sh` | ~20 MB | Balanced accuracy and speed |
+| YOLOv11l (large) | `./install_yolo11l.sh` | ~25 MB | Most accurate, slower |
 
 Install and run:
 
@@ -55,12 +56,16 @@ Install and run:
 ./install_yolo11.sh
 python run_yolo11.py --display
 
-# Medium (higher accuracy)
+# Medium (balanced)
 ./install_yolo11m.sh
 python run_yolo11.py --model ~/hailo_models/yolov11m.hef --display
+
+# Large (highest accuracy)
+./install_yolo11l.sh
+python run_yolo11.py --model ~/hailo_models/yolov11l.hef --display
 ```
 
-Each install script downloads a pre-compiled HEF from Hailo Model Zoo and sets up a Python virtual environment. Idempotent — safe to re-run. Both share the same venv and dependencies. There is a single `run_yolo11.py` runner — just pass `--model` to switch between nano and medium.
+Each install script downloads a pre-compiled HEF from Hailo Model Zoo and sets up a Python virtual environment. Idempotent — safe to re-run. All share the same venv and dependencies. There is a single `run_yolo11.py` runner — just pass `--model` to switch between sizes.
 
 **Camera input resolution:**
 
