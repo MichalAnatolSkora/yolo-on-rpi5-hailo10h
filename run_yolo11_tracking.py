@@ -219,6 +219,40 @@ class VehicleCounter:
         return crossed
 
 
+def _compute_iou(box_a: tuple, box_b: tuple) -> float:
+    """Compute IoU between two boxes (x1, y1, x2, y2)."""
+    xa = max(box_a[0], box_b[0])
+    ya = max(box_a[1], box_b[1])
+    xb = min(box_a[2], box_b[2])
+    yb = min(box_a[3], box_b[3])
+    inter = max(0, xb - xa) * max(0, yb - ya)
+    area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
+    area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def deduplicate_detections(detections: list[tuple], iou_threshold: float = 0.45) -> list[tuple]:
+    """
+    Remove overlapping detections of the same class, keeping the highest confidence.
+    Prevents the tracker from seeing multiple IDs for a single object.
+    """
+    if len(detections) <= 1:
+        return detections
+    # Sort by confidence descending
+    dets = sorted(detections, key=lambda d: d[4], reverse=True)
+    keep = []
+    for det in dets:
+        suppressed = False
+        for kept in keep:
+            if det[5] == kept[5] and _compute_iou(det[:4], kept[:4]) > iou_threshold:
+                suppressed = True
+                break
+        if not suppressed:
+            keep.append(det)
+    return keep
+
+
 def draw_tracking(
     frame: np.ndarray,
     tracked: dict[int, tuple],
@@ -371,6 +405,10 @@ def run(args: argparse.Namespace) -> None:
                     else:
                         vehicle_dets = [d for d in detections if d[5] in VEHICLE_CLASS_IDS]
 
+                    # Deduplicate overlapping boxes (keeps highest confidence per overlap group)
+                    if args.deduplicate:
+                        vehicle_dets = deduplicate_detections(vehicle_dets, iou_threshold=args.iou)
+
                     # Track
                     tracked = tracker.update(vehicle_dets)
 
@@ -421,6 +459,10 @@ def main() -> None:
     parser.add_argument(
         "--all-classes", action="store_true",
         help="Track all detected objects, not just vehicles (useful for testing)",
+    )
+    parser.add_argument(
+        "--deduplicate", action="store_true",
+        help="Remove overlapping detections before tracking (helps at low confidence)",
     )
 
     # Tracking parameters
