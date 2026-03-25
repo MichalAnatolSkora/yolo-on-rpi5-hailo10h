@@ -270,21 +270,13 @@ def run(args: argparse.Namespace) -> None:
                     bindings = configured_model.create_bindings()
                     bindings.input().set_buffer(np.expand_dims(input_data, axis=0))
 
-                    # Allocate output buffers
-                    output_buffers = {}
-                    for info in output_vstream_infos:
-                        buf = np.empty([1] + list(info.shape), dtype=np.float32)
-                        bindings.output(info.name).set_buffer(buf)
-                        output_buffers[info.name] = buf
-
-                    # Run async inference and wait for result
+                    # Run async inference (output buffers auto-allocated by HailoRT)
                     configured_model.wait_for_async_ready(timeout_ms=10000)
                     job = configured_model.run_async([bindings])
                     job.wait(timeout_ms=10000)
 
-                    # Get first output, remove batch dim
-                    output_name = list(output_buffers.keys())[0]
-                    output = output_buffers[output_name][0]
+                    # Retrieve output (auto-allocated with correct NMS buffer size)
+                    output = bindings.output().get_buffer()
 
                     # Postprocess and draw
                     if has_nms:
