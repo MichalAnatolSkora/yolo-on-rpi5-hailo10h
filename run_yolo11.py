@@ -337,8 +337,8 @@ def main() -> None:
         "--labels", default="", help="Path to class labels file (one per line). Defaults to COCO"
     )
     parser.add_argument(
-        "--source", default="picam",
-        help="'picam' for Pi Camera, or V4L2 device path for USB (e.g. /dev/video0)",
+        "--source", default="/dev/video0",
+        help="V4L2 device path for USB camera (e.g. /dev/video0), or 'picam' for Pi Camera",
     )
     parser.add_argument(
         "--confidence", type=float, default=0.5, help="Confidence threshold (default: 0.5)"
