@@ -50,33 +50,49 @@ def _signal_handler(signum, frame):
     _shutdown = True
 
 
-class CentroidTracker:
+class IOUTracker:
     """
-    Simple centroid-based multi-object tracker.
+    IoU-based tracker with linear velocity prediction (simplified SORT).
 
-    Associates detections to existing tracks by minimum Euclidean distance.
+    Matches detections to existing tracks by IoU between the predicted
+    bounding box (shifted by velocity) and the new detection. Much more
+    stable than centroid distance for fast-moving objects like vehicles.
     """
 
-    def __init__(self, max_disappeared: int = 30, max_distance: float = 80.0):
+    def __init__(self, max_disappeared: int = 50, min_iou: float = 0.15):
         self.next_id = 0
-        self.objects: OrderedDict[int, np.ndarray] = OrderedDict()  # id -> centroid
-        self.bboxes: dict[int, tuple] = {}  # id -> (x1, y1, x2, y2)
-        self.disappeared: dict[int, int] = {}  # id -> frames missing
+        self.tracks: OrderedDict[int, dict] = OrderedDict()
         self.max_disappeared = max_disappeared
-        self.max_distance = max_distance
+        self.min_iou = min_iou
 
-    def _register(self, centroid: np.ndarray, bbox: tuple) -> int:
+    def _register(self, det: tuple) -> int:
         obj_id = self.next_id
-        self.objects[obj_id] = centroid
-        self.bboxes[obj_id] = bbox
-        self.disappeared[obj_id] = 0
+        self.tracks[obj_id] = {
+            "bbox": det[:4],         # (x1, y1, x2, y2)
+            "det": det,              # full detection tuple
+            "vx": 0.0, "vy": 0.0,   # velocity of centroid
+            "disappeared": 0,
+        }
         self.next_id += 1
         return obj_id
 
-    def _deregister(self, obj_id: int):
-        del self.objects[obj_id]
-        del self.bboxes[obj_id]
-        del self.disappeared[obj_id]
+    def _predict_bbox(self, track: dict) -> tuple:
+        """Shift bbox by velocity to predict next position."""
+        x1, y1, x2, y2 = track["bbox"]
+        vx, vy = track["vx"], track["vy"]
+        return (x1 + vx, y1 + vy, x2 + vx, y2 + vy)
+
+    @staticmethod
+    def _iou(a: tuple, b: tuple) -> float:
+        xa = max(a[0], b[0])
+        ya = max(a[1], b[1])
+        xb = min(a[2], b[2])
+        yb = min(a[3], b[3])
+        inter = max(0, xb - xa) * max(0, yb - ya)
+        area_a = max(0, a[2] - a[0]) * max(0, a[3] - a[1])
+        area_b = max(0, b[2] - b[0]) * max(0, b[3] - b[1])
+        union = area_a + area_b - inter
+        return inter / union if union > 0 else 0.0
 
     def update(self, detections: list[tuple]) -> dict[int, tuple]:
         """
@@ -88,68 +104,84 @@ class CentroidTracker:
         Returns:
             dict of {track_id: (x1, y1, x2, y2, conf, class_id)}
         """
+        # No detections — age all tracks
         if len(detections) == 0:
-            for obj_id in list(self.disappeared.keys()):
-                self.disappeared[obj_id] += 1
-                if self.disappeared[obj_id] > self.max_disappeared:
-                    self._deregister(obj_id)
+            for tid in list(self.tracks.keys()):
+                self.tracks[tid]["disappeared"] += 1
+                if self.tracks[tid]["disappeared"] > self.max_disappeared:
+                    del self.tracks[tid]
             return {}
 
-        input_centroids = np.array([
-            ((d[0] + d[2]) / 2.0, (d[1] + d[3]) / 2.0) for d in detections
-        ])
-
-        if len(self.objects) == 0:
+        # No existing tracks — register all
+        if len(self.tracks) == 0:
             result = {}
-            for i, det in enumerate(detections):
-                obj_id = self._register(input_centroids[i], det[:4])
-                result[obj_id] = det
+            for det in detections:
+                tid = self._register(det)
+                result[tid] = det
             return result
 
-        object_ids = list(self.objects.keys())
-        object_centroids = np.array(list(self.objects.values()))
+        track_ids = list(self.tracks.keys())
+        predicted = [self._predict_bbox(self.tracks[tid]) for tid in track_ids]
 
-        # Compute distance matrix
-        dists = np.linalg.norm(
-            object_centroids[:, np.newaxis] - input_centroids[np.newaxis, :], axis=2
-        )
+        # Compute IoU matrix: tracks x detections
+        det_boxes = [d[:4] for d in detections]
+        iou_matrix = np.zeros((len(track_ids), len(detections)))
+        for r, pred_box in enumerate(predicted):
+            for c, det_box in enumerate(det_boxes):
+                iou_matrix[r, c] = self._iou(pred_box, det_box)
 
-        # Greedy assignment: sort by distance, assign closest pairs
-        rows = dists.min(axis=1).argsort()
-        cols = dists.argmin(axis=1)[rows]
-
-        used_rows = set()
-        used_cols = set()
+        # Greedy matching by highest IoU
+        matched_tracks = set()
+        matched_dets = set()
         result = {}
 
-        for row, col in zip(rows, cols):
-            if row in used_rows or col in used_cols:
-                continue
-            if dists[row, col] > self.max_distance:
-                continue
+        while True:
+            if iou_matrix.size == 0:
+                break
+            max_iou = iou_matrix.max()
+            if max_iou < self.min_iou:
+                break
+            r, c = np.unravel_index(iou_matrix.argmax(), iou_matrix.shape)
 
-            obj_id = object_ids[row]
-            self.objects[obj_id] = input_centroids[col]
-            self.bboxes[obj_id] = detections[col][:4]
-            self.disappeared[obj_id] = 0
-            result[obj_id] = detections[col]
+            tid = track_ids[r]
+            det = detections[c]
+            old_bbox = self.tracks[tid]["bbox"]
 
-            used_rows.add(row)
-            used_cols.add(col)
+            # Update velocity (smoothed)
+            old_cx = (old_bbox[0] + old_bbox[2]) / 2
+            old_cy = (old_bbox[1] + old_bbox[3]) / 2
+            new_cx = (det[0] + det[2]) / 2
+            new_cy = (det[1] + det[3]) / 2
+            alpha = 0.4  # smoothing factor
+            self.tracks[tid]["vx"] = alpha * (new_cx - old_cx) + (1 - alpha) * self.tracks[tid]["vx"]
+            self.tracks[tid]["vy"] = alpha * (new_cy - old_cy) + (1 - alpha) * self.tracks[tid]["vy"]
 
-        # Handle unmatched existing tracks
-        for row in range(len(object_ids)):
-            if row not in used_rows:
-                obj_id = object_ids[row]
-                self.disappeared[obj_id] += 1
-                if self.disappeared[obj_id] > self.max_disappeared:
-                    self._deregister(obj_id)
+            self.tracks[tid]["bbox"] = det[:4]
+            self.tracks[tid]["det"] = det
+            self.tracks[tid]["disappeared"] = 0
+            result[tid] = det
 
-        # Register new detections
-        for col in range(len(detections)):
-            if col not in used_cols:
-                obj_id = self._register(input_centroids[col], detections[col][:4])
-                result[obj_id] = detections[col]
+            matched_tracks.add(r)
+            matched_dets.add(c)
+
+            # Zero out matched row and column
+            iou_matrix[r, :] = 0
+            iou_matrix[:, c] = 0
+
+        # Age unmatched tracks
+        for r, tid in enumerate(track_ids):
+            if r not in matched_tracks:
+                self.tracks[tid]["disappeared"] += 1
+                # Drift predicted bbox so next frame prediction stays reasonable
+                self.tracks[tid]["bbox"] = self._predict_bbox(self.tracks[tid])
+                if self.tracks[tid]["disappeared"] > self.max_disappeared:
+                    del self.tracks[tid]
+
+        # Register unmatched detections
+        for c, det in enumerate(detections):
+            if c not in matched_dets:
+                tid = self._register(det)
+                result[tid] = det
 
         return result
 
@@ -327,17 +359,17 @@ def run(args: argparse.Namespace) -> None:
     log.info("Model input shape: %s", input_shape)
 
     # --- Init tracker and counter ---
-    tracker = CentroidTracker(
+    tracker = IOUTracker(
         max_disappeared=args.max_disappeared,
-        max_distance=args.max_distance,
+        min_iou=args.min_iou,
     )
     counter = VehicleCounter(
         line_y_ratio=args.line_y,
         direction=args.direction,
     )
     log.info(
-        "Tracking config: line_y=%.0f%%, direction=%s, max_distance=%.0f, max_disappeared=%d",
-        args.line_y * 100, args.direction, args.max_distance, args.max_disappeared,
+        "Tracking config: line_y=%.0f%%, direction=%s, min_iou=%.2f, max_disappeared=%d",
+        args.line_y * 100, args.direction, args.min_iou, args.max_disappeared,
     )
 
     # --- Configure Hailo device ---
@@ -479,8 +511,8 @@ def main() -> None:
         help="Frames before a lost track is removed (default: 50)",
     )
     parser.add_argument(
-        "--max-distance", type=float, default=200.0,
-        help="Max pixel distance for centroid matching (default: 200)",
+        "--min-iou", type=float, default=0.15,
+        help="Minimum IoU to match detection to track (default: 0.15)",
     )
 
     # Input resolution
