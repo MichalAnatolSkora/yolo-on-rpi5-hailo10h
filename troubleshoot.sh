@@ -398,12 +398,12 @@ if [[ -d "$MODEL_DIR" ]]; then
     else
         warn "No .hef models found in $MODEL_DIR"
         add_fix "Download YOLOv12n model for Hailo-10H" \
-                "./install_yolo12.sh"
+                "./install_yolo11.sh"
     fi
 else
     warn "Model directory $MODEL_DIR does not exist"
     add_fix "Download YOLOv12n model for Hailo-10H" \
-            "./install_yolo12.sh"
+            "./install_yolo11.sh"
 fi
 
 echo ""

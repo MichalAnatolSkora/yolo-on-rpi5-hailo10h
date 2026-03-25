@@ -13,9 +13,9 @@ Prerequisites:
 - NumPy (pip install numpy).
 
 Usage:
-    python run_yolo12.py --model ~/hailo_models/yolov12n.hef
-    python run_yolo12.py --model ~/hailo_models/yolov12n.hef --source /dev/video0
-    python run_yolo12.py --model ~/hailo_models/yolov12n.hef --confidence 0.4
+    python run_yolo11.py --model ~/hailo_models/yolov12n.hef
+    python run_yolo11.py --model ~/hailo_models/yolov12n.hef --source /dev/video0
+    python run_yolo11.py --model ~/hailo_models/yolov12n.hef --confidence 0.4
 """
 
 import argparse
