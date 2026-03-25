@@ -416,7 +416,7 @@ def main() -> None:
         "--source", default="/dev/video0",
         help="V4L2 device or 'picam' for Pi Camera",
     )
-    parser.add_argument("--confidence", type=float, default=0.5, help="Confidence threshold")
+    parser.add_argument("--confidence", type=float, default=0.3, help="Confidence threshold (default: 0.3, lower than detection for stable tracking)")
     parser.add_argument("--iou", type=float, default=0.45, help="NMS IoU threshold")
     parser.add_argument(
         "--all-classes", action="store_true",
@@ -433,12 +433,12 @@ def main() -> None:
         help="Count vehicles going down, up, or both (default: down)",
     )
     parser.add_argument(
-        "--max-disappeared", type=int, default=30,
-        help="Frames before a lost track is removed (default: 30)",
+        "--max-disappeared", type=int, default=50,
+        help="Frames before a lost track is removed (default: 50)",
     )
     parser.add_argument(
-        "--max-distance", type=float, default=80.0,
-        help="Max pixel distance for centroid matching (default: 80)",
+        "--max-distance", type=float, default=200.0,
+        help="Max pixel distance for centroid matching (default: 200)",
     )
 
     # Input resolution

@@ -120,10 +120,11 @@ By default only vehicles (car, motorcycle, bus, truck) are tracked. Use `--all-c
 
 | Flag | Default | Description |
 |---|---|---|
+| `--confidence` | `0.3` | Detection threshold (lower = more stable tracking) |
 | `--line-y` | `0.5` | Counting line Y position (0.0 = top, 1.0 = bottom) |
 | `--direction` | `down` | Count direction: `down`, `up`, or `both` |
-| `--max-disappeared` | `30` | Frames before a lost track is removed |
-| `--max-distance` | `80` | Max pixel distance for centroid matching |
+| `--max-disappeared` | `50` | Frames before a lost track is removed |
+| `--max-distance` | `200` | Max pixel distance for centroid matching |
 | `--all-classes` | off | Track all detected objects, not just vehicles |
 
 All camera/display/model flags from `run_yolo11.py` are supported (`--display-large`, `--input-large`, `--source`, `--model`, `--confidence`, etc.).
