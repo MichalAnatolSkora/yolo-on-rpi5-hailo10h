@@ -251,8 +251,9 @@ def run(args: argparse.Namespace) -> None:
 
         with infer_model.configure() as configured_model:
             # --- Open camera ---
-            log.info("Opening camera (source=%s)...", args.source)
-            cap = open_camera(args.source, args.capture_width, args.capture_height)
+            cap_w, cap_h = args.input_size
+            log.info("Opening camera (source=%s, capture=%dx%d)...", args.source, cap_w, cap_h)
+            cap = open_camera(args.source, cap_w, cap_h)
             if not cap.isOpened():
                 log.error("Could not open camera. Check connection.")
                 sys.exit(1)
@@ -340,16 +341,24 @@ def main() -> None:
         help="'picam' for Pi Camera, or V4L2 device path for USB (e.g. /dev/video0)",
     )
     parser.add_argument(
-        "--capture-width", type=int, default=640, help="Camera capture width (default: 640)"
-    )
-    parser.add_argument(
-        "--capture-height", type=int, default=480, help="Camera capture height (default: 480)"
-    )
-    parser.add_argument(
         "--confidence", type=float, default=0.5, help="Confidence threshold (default: 0.5)"
     )
     parser.add_argument(
         "--iou", type=float, default=0.45, help="NMS IoU threshold (default: 0.45)"
+    )
+
+    input_group = parser.add_mutually_exclusive_group()
+    input_group.add_argument(
+        "--input-small", action="store_const", dest="input_size", const=(640, 480),
+        help="Camera capture at 640x480 (default)",
+    )
+    input_group.add_argument(
+        "--input", action="store_const", dest="input_size", const=(1024, 768),
+        help="Camera capture at 1024x768",
+    )
+    input_group.add_argument(
+        "--input-large", action="store_const", dest="input_size", const=(1280, 720),
+        help="Camera capture at 1280x720",
     )
 
     display_group = parser.add_mutually_exclusive_group()
@@ -370,6 +379,9 @@ def main() -> None:
         "--verbose", action="store_true", help="Enable debug logging"
     )
     args = parser.parse_args()
+
+    if args.input_size is None:
+        args.input_size = (640, 480)
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)

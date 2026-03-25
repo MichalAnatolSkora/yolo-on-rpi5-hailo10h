@@ -62,7 +62,17 @@ python run_yolo11.py --model ~/hailo_models/yolov11m.hef --display
 
 Each install script downloads a pre-compiled HEF from Hailo Model Zoo and sets up a Python virtual environment. Idempotent — safe to re-run. Both share the same venv and dependencies. There is a single `run_yolo11.py` runner — just pass `--model` to switch between nano and medium.
 
-**Display options:**
+**Camera input resolution:**
+
+| Flag | Resolution |
+|---|---|
+| `--input-small` | 640x480 (default) |
+| `--input` | 1024x768 |
+| `--input-large` | 1280x720 |
+
+Higher input resolution gives the model more detail to work with but uses more CPU for rescaling.
+
+**Display preview:**
 
 | Flag | Resolution |
 |---|---|
@@ -74,8 +84,9 @@ Without any display flag the script runs headless (no preview window).
 
 **Other options:**
 ```bash
-python run_yolo11.py --display --source /dev/video0        # USB camera
-python run_yolo11.py --display-large --confidence 0.4      # large preview, lower threshold
+python run_yolo11.py --display --source /dev/video0              # USB camera
+python run_yolo11.py --input-large --display-large               # high-res capture + preview
+python run_yolo11.py --display --confidence 0.4                  # lower threshold
 ```
 
 To find your USB camera device path: `ls /dev/video*` or `v4l2-ctl --list-devices`.
