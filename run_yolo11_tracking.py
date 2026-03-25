@@ -59,11 +59,12 @@ class IOUTracker:
     stable than centroid distance for fast-moving objects like vehicles.
     """
 
-    def __init__(self, max_disappeared: int = 50, min_iou: float = 0.15):
+    def __init__(self, max_disappeared: int = 50, min_iou: float = 0.15, max_distance: float = 200.0):
         self.next_id = 0
         self.tracks: OrderedDict[int, dict] = OrderedDict()
         self.max_disappeared = max_disappeared
         self.min_iou = min_iou
+        self.max_distance = max_distance
 
     def _register(self, det: tuple) -> int:
         obj_id = self.next_id
@@ -167,6 +168,57 @@ class IOUTracker:
             # Zero out matched row and column
             iou_matrix[r, :] = 0
             iou_matrix[:, c] = 0
+
+        # Fallback: match remaining tracks/detections by centroid distance
+        # This catches fast-moving objects whose bboxes don't overlap between frames
+        unmatched_track_idxs = [r for r in range(len(track_ids)) if r not in matched_tracks]
+        unmatched_det_idxs = [c for c in range(len(detections)) if c not in matched_dets]
+
+        if unmatched_track_idxs and unmatched_det_idxs:
+            pred_centroids = np.array([
+                ((predicted[r][0] + predicted[r][2]) / 2, (predicted[r][1] + predicted[r][3]) / 2)
+                for r in unmatched_track_idxs
+            ])
+            det_centroids = np.array([
+                ((detections[c][0] + detections[c][2]) / 2, (detections[c][1] + detections[c][3]) / 2)
+                for c in unmatched_det_idxs
+            ])
+            dist_matrix = np.linalg.norm(
+                pred_centroids[:, np.newaxis] - det_centroids[np.newaxis, :], axis=2
+            )
+
+            while True:
+                if dist_matrix.size == 0:
+                    break
+                min_dist = dist_matrix.min()
+                if min_dist > self.max_distance:
+                    break
+                ri, ci = np.unravel_index(dist_matrix.argmin(), dist_matrix.shape)
+
+                r = unmatched_track_idxs[ri]
+                c = unmatched_det_idxs[ci]
+                tid = track_ids[r]
+                det = detections[c]
+                old_bbox = self.tracks[tid]["bbox"]
+
+                old_cx = (old_bbox[0] + old_bbox[2]) / 2
+                old_cy = (old_bbox[1] + old_bbox[3]) / 2
+                new_cx = (det[0] + det[2]) / 2
+                new_cy = (det[1] + det[3]) / 2
+                alpha = 0.4
+                self.tracks[tid]["vx"] = alpha * (new_cx - old_cx) + (1 - alpha) * self.tracks[tid]["vx"]
+                self.tracks[tid]["vy"] = alpha * (new_cy - old_cy) + (1 - alpha) * self.tracks[tid]["vy"]
+
+                self.tracks[tid]["bbox"] = det[:4]
+                self.tracks[tid]["det"] = det
+                self.tracks[tid]["disappeared"] = 0
+                result[tid] = det
+
+                matched_tracks.add(r)
+                matched_dets.add(c)
+
+                dist_matrix[ri, :] = np.inf
+                dist_matrix[:, ci] = np.inf
 
         # Age unmatched tracks
         for r, tid in enumerate(track_ids):
@@ -362,14 +414,15 @@ def run(args: argparse.Namespace) -> None:
     tracker = IOUTracker(
         max_disappeared=args.max_disappeared,
         min_iou=args.min_iou,
+        max_distance=args.max_distance,
     )
     counter = VehicleCounter(
         line_y_ratio=args.line_y,
         direction=args.direction,
     )
     log.info(
-        "Tracking config: line_y=%.0f%%, direction=%s, min_iou=%.2f, max_disappeared=%d",
-        args.line_y * 100, args.direction, args.min_iou, args.max_disappeared,
+        "Tracking config: line_y=%.0f%%, direction=%s, min_iou=%.2f, max_dist=%.0f, max_disappeared=%d",
+        args.line_y * 100, args.direction, args.min_iou, args.max_distance, args.max_disappeared,
     )
 
     # --- Configure Hailo device ---
@@ -513,6 +566,10 @@ def main() -> None:
     parser.add_argument(
         "--min-iou", type=float, default=0.15,
         help="Minimum IoU to match detection to track (default: 0.15)",
+    )
+    parser.add_argument(
+        "--max-distance", type=float, default=200.0,
+        help="Max centroid distance fallback when IoU fails (default: 200)",
     )
 
     # Input resolution
