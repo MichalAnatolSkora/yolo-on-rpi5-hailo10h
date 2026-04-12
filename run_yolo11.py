@@ -1,39 +1,31 @@
 #!/usr/bin/env python3
 """
-Run YOLO object detection via Hailo-10H NPU on a Raspberry Pi 5.
+Run YOLO object detection on Hailo-10H NPU or locally (CPU/MPS).
 
-Uses the Hailo Python API (HailoRT) directly instead of GStreamer.
-Works with any YOLOv11 .hef model (nano, medium, etc.).
-
-Prerequisites:
-- A YOLO .hef model compiled for Hailo-10H.
-- OpenCV (pip install opencv-python).
-- Hailo RT Python bindings (installed via hailo-all).
-- NumPy (pip install numpy).
+Backend is auto-selected by model extension:
+- .hef  -> Hailo-10H NPU (Raspberry Pi)
+- .pt   -> Ultralytics (macOS / Linux / Windows)
+- .onnx -> Ultralytics (macOS / Linux / Windows)
 
 Usage:
-    python run_yolo11.py --display                                        # yolov11n, 640x480
-    python run_yolo11.py --model ~/hailo_models/yolov11m.hef --display    # yolov11m
-    python run_yolo11.py --display-large --source /dev/video0             # 1280x720, USB cam
+    # Raspberry Pi + Hailo-10H
+    python run_yolo11.py --display
+    python run_yolo11.py --model ~/hailo_models/yolov11m.hef --display
+
+    # MacBook / laptop
+    python run_yolo11.py --model yolo11n.pt --source 0 --display
 """
 
 import argparse
 import logging
-import os
 import signal
 import sys
 
 import cv2
 
 from hailo_common import (
-    COCO_CLASSES,
-    HailoSession,
-    draw_detections,
-    load_labels,
-    open_camera,
-    postprocess_nms,
-    postprocess_raw,
-    preprocess,
+    ThreadedCamera, create_session, default_model, default_source,
+    draw_detections, load_labels, open_camera,
 )
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
@@ -49,16 +41,16 @@ def _signal_handler(signum, frame):
 
 
 def run(args: argparse.Namespace) -> None:
-    labels = load_labels(args.labels)
+    with create_session(args.model) as session:
+        labels = load_labels(args.labels) if args.labels else session.labels
 
-    with HailoSession(args.model) as session:
-        # --- Open camera ---
         cap_w, cap_h = args.input_size
         log.info("Opening camera (source=%s, capture=%dx%d)...", args.source, cap_w, cap_h)
-        cap = open_camera(args.source, cap_w, cap_h)
-        if not cap.isOpened():
+        raw_cap = open_camera(args.source, cap_w, cap_h)
+        if not raw_cap.isOpened():
             log.error("Could not open camera. Check connection.")
             sys.exit(1)
+        cap = ThreadedCamera(raw_cap)
 
         log.info("Running YOLO inference. Press 'q' to quit.")
         frame_count = 0
@@ -70,23 +62,12 @@ def run(args: argparse.Namespace) -> None:
                     log.warning("Failed to fetch frame — retrying...")
                     continue
 
-                input_data = preprocess(frame, session.input_h, session.input_w)
-                output = session.infer(input_data)
-
-                if session.has_nms:
-                    detections = postprocess_nms(
-                        output.flatten(),
-                        frame.shape[0], frame.shape[1],
-                        len(labels),
-                        args.confidence,
-                    )
-                else:
-                    detections = postprocess_raw(
-                        output,
-                        frame.shape[0], frame.shape[1],
-                        session.input_h, session.input_w,
-                        args.confidence, args.iou,
-                    )
+                detections = session.detect(
+                    frame,
+                    conf_threshold=args.confidence,
+                    iou_threshold=args.iou,
+                    num_classes=len(labels),
+                )
                 frame = draw_detections(frame, detections, labels)
 
                 frame_count += 1
@@ -97,7 +78,7 @@ def run(args: argparse.Namespace) -> None:
                 if args.display_size:
                     dw, dh = args.display_size
                     show = cv2.resize(frame, (dw, dh)) if (frame.shape[1], frame.shape[0]) != (dw, dh) else frame
-                    cv2.imshow("YOLO Hailo-10H", show)
+                    cv2.imshow("YOLO Inference", show)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
         finally:
@@ -111,21 +92,20 @@ def main() -> None:
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
-    default_model = os.path.expanduser("~/hailo_models/yolov11n.hef")
-
     parser = argparse.ArgumentParser(
-        description="Run YOLO object detection on Hailo-10H NPU"
+        description="Run YOLO object detection (Hailo NPU or local CPU/MPS)"
     )
     parser.add_argument(
-        "--model", default=default_model,
-        help="Path to YOLO .hef model (default: ~/hailo_models/yolov11n.hef)",
+        "--model", default=default_model(),
+        help="Path to model: .hef (Hailo), .pt or .onnx (Ultralytics)",
     )
     parser.add_argument(
         "--labels", default="", help="Path to class labels file (one per line). Defaults to COCO"
     )
     parser.add_argument(
-        "--source", default="/dev/video0",
-        help="V4L2 device path for USB camera (e.g. /dev/video0), or 'picam' for Pi Camera",
+        "--source", default=default_source(),
+        help="Camera source: device index (0, 1), V4L2 path (/dev/video0), "
+             "or 'picam' for Pi Camera",
     )
     parser.add_argument(
         "--confidence", type=float, default=0.5, help="Confidence threshold (default: 0.5)"

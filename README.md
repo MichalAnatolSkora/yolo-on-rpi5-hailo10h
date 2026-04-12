@@ -2,9 +2,35 @@
 
 > **If this repo saved you hours of Hailo configuration headaches, please give it a :star: — it helps others find it too!**
 
-One-click setup for running YOLO object detection on Raspberry Pi 5 with the Hailo-10H AI accelerator. Handles driver installation, PCIe configuration, model downloads, and diagnostics automatically.
+One-click setup for running YOLO object detection on Raspberry Pi 5 with the Hailo-10H AI accelerator. Also runs locally on macOS / Linux / Windows laptops for development and testing.
 
-## Hardware Requirements
+## Run Locally on MacBook / Laptop
+
+No Hailo hardware needed. Uses Ultralytics with CPU or Apple Silicon MPS acceleration.
+
+```bash
+# Install dependencies
+pip install opencv-python ultralytics numpy
+
+# Object detection (uses built-in webcam)
+python run_yolo11.py --model yolo11n.pt --source 0 --display
+
+# Vehicle tracking
+python run_yolo11_tracking.py --model yolo11n.pt --source 0 --display --all-classes
+```
+
+Ultralytics auto-downloads `yolo11n.pt` on first run. Use `--source 0` for the default webcam (or `1`, `2` for other cameras). On Apple Silicon Macs, MPS acceleration is used automatically when available.
+
+The backend is selected by model file extension:
+| Extension | Backend | Where it runs |
+|---|---|---|
+| `.pt` | Ultralytics | CPU / MPS / CUDA (any platform) |
+| `.onnx` | Ultralytics | CPU / MPS / CUDA (any platform) |
+| `.hef` | HailoRT | Hailo-10H NPU (Raspberry Pi) |
+
+## Raspberry Pi 5 + Hailo-10H Setup
+
+### Hardware Requirements
 | Component | Notes |
 |---|---|
 | **Raspberry Pi 5** | 4GB or 8GB RAM recommended |
@@ -13,7 +39,7 @@ One-click setup for running YOLO object detection on Raspberry Pi 5 with the Hai
 | **Thermal Pad** | Transfers heat from Hailo-10H to the expansion board |
 | **Raspberry Pi Camera** *(optional)* | For real-time inference demos |
 
-## Quick Start
+### Quick Start
 
 ```bash
 git clone https://github.com/MichalAnatolSkora/yolo-on-rpi5-hailo10h.git
@@ -41,14 +67,14 @@ Look for `Speed 8GT/s` which indicates Gen 3 is active (Gen 2 would show `5GT/s`
 
 ## YOLO Object Detection
 
-Three model sizes are available:
+Four model sizes are available, installed via a single script with a variant argument:
 
-| Model | Install script | Size | Notes |
+| Model | Install command | Size | Notes |
 |---|---|---|---|
-| YOLOv11n (nano) | `./install_yolo11.sh` | ~4.9 MB | Fastest, good for real-time on RPi 5 |
-| YOLOv11m (medium) | `./install_yolo11m.sh` | ~20 MB | Balanced accuracy and speed |
-| YOLOv11l (large) | `./install_yolo11l.sh` | ~25 MB | High accuracy, slower |
-| YOLOv11x (extra-large) | `./install_yolo11x.sh` | ~46 MB | Highest accuracy, slowest |
+| YOLOv11n (nano) | `./install_yolo11.sh` or `./install_yolo11.sh n` | ~4.9 MB | Fastest, good for real-time on RPi 5 |
+| YOLOv11m (medium) | `./install_yolo11.sh m` | ~20 MB | Balanced accuracy and speed |
+| YOLOv11l (large) | `./install_yolo11.sh l` | ~25 MB | High accuracy, slower |
+| YOLOv11x (extra-large) | `./install_yolo11.sh x` | ~46 MB | Highest accuracy, slowest |
 
 Install and run:
 
@@ -58,19 +84,19 @@ Install and run:
 python run_yolo11.py --display
 
 # Medium (balanced)
-./install_yolo11m.sh
+./install_yolo11.sh m
 python run_yolo11.py --model ~/hailo_models/yolov11m.hef --display
 
 # Large (high accuracy)
-./install_yolo11l.sh
+./install_yolo11.sh l
 python run_yolo11.py --model ~/hailo_models/yolov11l.hef --display
 
 # Extra-large (highest accuracy — may not hit real-time FPS)
-./install_yolo11x.sh
+./install_yolo11.sh x
 python run_yolo11.py --model ~/hailo_models/yolov11x.hef --display
 ```
 
-Each install script downloads a pre-compiled HEF from Hailo Model Zoo and sets up a Python virtual environment. Idempotent — safe to re-run. All share the same venv and dependencies. There is a single `run_yolo11.py` runner — just pass `--model` to switch between sizes.
+The install script downloads a pre-compiled HEF from Hailo Model Zoo and sets up a Python virtual environment. Idempotent — safe to re-run. All variants share the same venv and dependencies.
 
 **Camera input resolution:**
 
@@ -94,25 +120,28 @@ Without any display flag the script runs headless (no preview window).
 
 **Other options:**
 ```bash
-python run_yolo11.py --display --source /dev/video0              # USB camera
+python run_yolo11.py --display --source /dev/video0              # USB camera (Linux)
+python run_yolo11.py --display --source 0                        # webcam by index (macOS / Linux)
 python run_yolo11.py --input-large --display-large               # high-res capture + preview
 python run_yolo11.py --display --confidence 0.4                  # lower threshold
+python run_yolo11.py --model yolo11n.pt --source 0 --display     # local mode (.pt model)
 ```
 
-To find your USB camera device path: `ls /dev/video*` or `v4l2-ctl --list-devices`.
+To find your USB camera device path on Linux: `ls /dev/video*` or `v4l2-ctl --list-devices`.
 
 ## Vehicle Tracking & Counting
 
-Track and count vehicles (cars, motorcycles, buses, trucks) crossing a configurable line using YOLOv11 detection + centroid tracking. No extra dependencies required.
+Track and count vehicles (cars, motorcycles, buses, trucks) crossing a configurable line using YOLO detection + IoU-based tracking. Works on both Hailo NPU and locally.
 
 ```bash
+# Raspberry Pi + Hailo
 python run_yolo11_tracking.py --display                      # count vehicles going down, line at 50%
 python run_yolo11_tracking.py --display --line-y 0.6         # line at 60% of frame height
 python run_yolo11_tracking.py --display --direction both     # count both directions
-python run_yolo11_tracking.py --display --all-classes        # track all objects (useful for testing)
-```
 
-Uses the same model as `run_yolo11.py` — install it first with `./install_yolo11.sh`.
+# MacBook / laptop
+python run_yolo11_tracking.py --model yolo11n.pt --source 0 --display --all-classes
+```
 
 By default only vehicles (car, motorcycle, bus, truck) are tracked. Use `--all-classes` to track all COCO objects — handy for testing indoors without vehicles.
 
@@ -130,22 +159,13 @@ By default only vehicles (car, motorcycle, bus, truck) are tracked. Use `--all-c
 
 All camera/display/model flags from `run_yolo11.py` are supported (`--display-large`, `--input-large`, `--source`, `--model`, `--confidence`, etc.).
 
-## Gesture Recognition
+## Gesture Recognition (WIP)
 
-Detects 18 hand gestures (HaGRID dataset) and maps them to configurable actions — shell commands, on-screen messages, CSV logging.
+> **This feature is experimental and not yet functional.** The code and install script are included for reference, but gesture recognition has not been validated end-to-end. Contributions welcome.
 
-```bash
-./install_yolo11_gestures.sh                                                    # setup model + dataset
-python run_gestures.py --model ~/hailo_models/yolov11n_gestures.hef --display   # run with live preview
-```
+The goal is to detect 18 hand gestures (HaGRID dataset) and map them to configurable actions — shell commands, on-screen messages, CSV logging.
 
-The gesture model is separate from the object detection model above — different dataset (HaGRID vs COCO), different weights. The install script will prompt you to supply training images from [HaGRID](https://github.com/hukenovs/hagrid) or [Roboflow](https://universe.roboflow.com), then trains and compiles a Hailo-10H HEF. Reuses the existing venv if you already ran `install_yolo11.sh`.
-
-**Options:**
-```bash
-python run_gestures.py --model ~/hailo_models/yolov11n_gestures.hef --display --source /dev/video0
-python run_gestures.py --model ~/hailo_models/yolov11n_gestures.hef --log-csv gestures.csv   # headless
-```
+The gesture model is separate from the object detection model — different dataset (HaGRID vs COCO), different weights. The install script (`install_yolo11_gestures.sh`) sets up the dataset structure and attempts to train + compile a Hailo-10H HEF, but this pipeline has not been fully tested.
 
 **Configure actions** in `gesture_actions.yaml`:
 ```yaml
@@ -159,8 +179,6 @@ gestures:
     message: "Stop / Pause"
     hold_time: 0.8
 ```
-
-Features: hold detection, cooldown, shell command triggers, HUD overlay, headless mode, CSV logging.
 
 ## Other Models
 

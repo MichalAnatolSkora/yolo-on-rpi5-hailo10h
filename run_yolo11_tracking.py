@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """
-Vehicle tracking and counting using YOLO on Hailo-10H NPU.
+Vehicle tracking and counting using YOLO (Hailo NPU or local CPU/MPS).
 
 Extends run_yolo11.py with:
-- Centroid-based object tracking across frames.
+- IoU-based object tracking across frames.
 - A configurable counting line — vehicles that cross it are counted.
 - Filters for vehicle classes only (car, motorcycle, bus, truck).
 
 Usage:
+    # Raspberry Pi + Hailo-10H
     python run_yolo11_tracking.py --display
-    python run_yolo11_tracking.py --display --line-y 0.6          # line at 60% height
-    python run_yolo11_tracking.py --display --direction both      # count both directions
     python run_yolo11_tracking.py --display --source /dev/video0
+
+    # MacBook / laptop
+    python run_yolo11_tracking.py --model yolo11n.pt --source 0 --display
 """
 
 import argparse
 import logging
-import os
 import signal
 import sys
 from collections import OrderedDict
@@ -25,12 +26,8 @@ import cv2
 import numpy as np
 
 from hailo_common import (
-    HailoSession,
-    load_labels,
-    open_camera,
-    postprocess_nms,
-    postprocess_raw,
-    preprocess,
+    ThreadedCamera, create_session, default_model, default_source,
+    load_labels, open_camera,
 )
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
@@ -241,16 +238,10 @@ class VehicleCounter:
     """Count vehicles entering a horizontal counting zone."""
 
     def __init__(self, line_y_ratio: float = 0.5, direction: str = "down", margin: int = 40):
-        """
-        Args:
-            line_y_ratio: Y position of counting zone center as fraction of frame height (0-1).
-            direction: "down", "up", or "both".
-            margin: Half-height of counting zone in pixels. Object entering the zone is counted.
-        """
         self.line_y_ratio = line_y_ratio
         self.direction = direction
         self.margin = margin
-        self.prev_centroids: dict[int, float] = {}  # track_id -> previous cy
+        self.prev_centroids: dict[int, float] = {}
         self.counted_ids: set[int] = set()
         self.count_down = 0
         self.count_up = 0
@@ -265,11 +256,6 @@ class VehicleCounter:
             return self.count_up
 
     def update(self, tracked: dict[int, tuple], frame_h: int) -> list[int]:
-        """
-        Check which tracked vehicles entered the counting zone this frame.
-
-        Returns list of track_ids that just crossed.
-        """
         line_y = int(self.line_y_ratio * frame_h)
         zone_top = line_y - self.margin
         zone_bot = line_y + self.margin
@@ -281,14 +267,12 @@ class VehicleCounter:
             if track_id in self.prev_centroids and track_id not in self.counted_ids:
                 prev_cy = self.prev_centroids[track_id]
 
-                # Crossed downward: was above zone, now inside or below
                 if prev_cy < zone_top and cy >= zone_top:
                     if self.direction in ("down", "both"):
                         self.count_down += 1
                         self.counted_ids.add(track_id)
                         crossed.append(track_id)
 
-                # Crossed upward: was below zone, now inside or above
                 elif prev_cy > zone_bot and cy <= zone_bot:
                     if self.direction in ("up", "both"):
                         self.count_up += 1
@@ -297,7 +281,6 @@ class VehicleCounter:
 
             self.prev_centroids[track_id] = cy
 
-        # Clean up old IDs
         active_ids = set(tracked.keys())
         stale = [tid for tid in self.prev_centroids if tid not in active_ids]
         for tid in stale:
@@ -307,10 +290,7 @@ class VehicleCounter:
 
 
 def deduplicate_detections(detections: list[tuple], iou_threshold: float = 0.45) -> list[tuple]:
-    """
-    Remove overlapping detections of the same class, keeping the highest confidence.
-    Prevents the tracker from seeing multiple IDs for a single object.
-    """
+    """Remove overlapping detections of the same class, keeping highest confidence."""
     if len(detections) <= 1:
         return detections
     dets = sorted(detections, key=lambda d: d[4], reverse=True)
@@ -339,7 +319,6 @@ def draw_tracking(
     zone_top = line_y - counter.margin
     zone_bot = line_y + counter.margin
 
-    # Draw counting zone (semi-transparent red band)
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, zone_top), (w, zone_bot), (0, 0, 255), -1)
     cv2.addWeighted(overlay, 0.2, frame, 0.8, 0, frame)
@@ -350,7 +329,6 @@ def draw_tracking(
         label = labels[cls_id] if cls_id < len(labels) else str(cls_id)
         cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
 
-        # Green for normal, yellow for just-crossed
         color = (0, 255, 255) if track_id in crossed_ids else (0, 255, 0)
 
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
@@ -359,10 +337,8 @@ def draw_tracking(
         cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw, y1), color, -1)
         cv2.putText(frame, text, (x1, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
 
-        # Centroid dot
         cv2.circle(frame, (cx, cy), 4, color, -1)
 
-    # Count overlay
     if counter.direction == "both":
         count_text = f"Down: {counter.count_down}  Up: {counter.count_up}  Total: {counter.total}"
     else:
@@ -375,9 +351,6 @@ def draw_tracking(
 
 
 def run(args: argparse.Namespace) -> None:
-    labels = load_labels(args.labels)
-
-    # --- Init tracker and counter ---
     tracker = IOUTracker(
         max_disappeared=args.max_disappeared,
         min_iou=args.min_iou,
@@ -393,13 +366,16 @@ def run(args: argparse.Namespace) -> None:
         args.line_y * 100, args.direction, args.min_iou, args.max_distance, args.max_disappeared,
     )
 
-    with HailoSession(args.model) as session:
+    with create_session(args.model) as session:
+        labels = load_labels(args.labels) if args.labels else session.labels
+
         cap_w, cap_h = args.input_size
         log.info("Opening camera (source=%s, capture=%dx%d)...", args.source, cap_w, cap_h)
-        cap = open_camera(args.source, cap_w, cap_h)
-        if not cap.isOpened():
+        raw_cap = open_camera(args.source, cap_w, cap_h)
+        if not raw_cap.isOpened():
             log.error("Could not open camera. Check connection.")
             sys.exit(1)
+        cap = ThreadedCamera(raw_cap)
 
         log.info("Running vehicle tracking. Press 'q' to quit.")
         frame_count = 0
@@ -411,23 +387,12 @@ def run(args: argparse.Namespace) -> None:
                     log.warning("Failed to fetch frame — retrying...")
                     continue
 
-                input_data = preprocess(frame, session.input_h, session.input_w)
-                output = session.infer(input_data)
-
-                if session.has_nms:
-                    detections = postprocess_nms(
-                        output.flatten(),
-                        frame.shape[0], frame.shape[1],
-                        len(labels),
-                        args.confidence,
-                    )
-                else:
-                    detections = postprocess_raw(
-                        output,
-                        frame.shape[0], frame.shape[1],
-                        session.input_h, session.input_w,
-                        args.confidence, args.iou,
-                    )
+                detections = session.detect(
+                    frame,
+                    conf_threshold=args.confidence,
+                    iou_threshold=args.iou,
+                    num_classes=len(labels),
+                )
 
                 # Filter to vehicles only (unless --all-classes)
                 if args.all_classes:
@@ -435,17 +400,11 @@ def run(args: argparse.Namespace) -> None:
                 else:
                     vehicle_dets = [d for d in detections if d[5] in VEHICLE_CLASS_IDS]
 
-                # Deduplicate overlapping boxes (keeps highest confidence per overlap group)
                 if args.deduplicate:
                     vehicle_dets = deduplicate_detections(vehicle_dets, iou_threshold=args.iou)
 
-                # Track
                 tracked = tracker.update(vehicle_dets)
-
-                # Count
                 crossed = counter.update(tracked, frame.shape[0])
-
-                # Draw
                 frame = draw_tracking(frame, tracked, labels, counter, crossed)
 
                 frame_count += 1
@@ -459,7 +418,7 @@ def run(args: argparse.Namespace) -> None:
                 if args.display_size:
                     dw, dh = args.display_size
                     show = cv2.resize(frame, (dw, dh)) if (frame.shape[1], frame.shape[0]) != (dw, dh) else frame
-                    cv2.imshow("Vehicle Tracking - Hailo-10H", show)
+                    cv2.imshow("Vehicle Tracking", show)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
         finally:
@@ -473,61 +432,42 @@ def main() -> None:
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
-    default_model = os.path.expanduser("~/hailo_models/yolov11n.hef")
-
     parser = argparse.ArgumentParser(
-        description="Track and count vehicles using YOLO on Hailo-10H NPU"
+        description="Track and count vehicles using YOLO (Hailo NPU or local CPU/MPS)"
     )
-    parser.add_argument("--model", default=default_model, help="Path to YOLO .hef model")
+    parser.add_argument("--model", default=default_model(),
+                        help="Path to model: .hef (Hailo), .pt or .onnx (Ultralytics)")
     parser.add_argument("--labels", default="", help="Path to class labels file")
     parser.add_argument(
-        "--source", default="/dev/video0",
-        help="V4L2 device or 'picam' for Pi Camera",
+        "--source", default=default_source(),
+        help="Camera source: device index (0, 1), V4L2 path, or 'picam'",
     )
-    parser.add_argument("--confidence", type=float, default=0.3, help="Confidence threshold (default: 0.3, lower than detection for stable tracking)")
+    parser.add_argument("--confidence", type=float, default=0.3,
+                        help="Confidence threshold (default: 0.3)")
     parser.add_argument("--iou", type=float, default=0.45, help="NMS IoU threshold")
-    parser.add_argument(
-        "--all-classes", action="store_true",
-        help="Track all detected objects, not just vehicles (useful for testing)",
-    )
-    parser.add_argument(
-        "--deduplicate", action="store_true",
-        help="Remove overlapping detections before tracking (helps at low confidence)",
-    )
+    parser.add_argument("--all-classes", action="store_true",
+                        help="Track all objects, not just vehicles")
+    parser.add_argument("--deduplicate", action="store_true",
+                        help="Remove overlapping detections before tracking")
 
-    # Tracking parameters
-    parser.add_argument(
-        "--line-y", type=float, default=0.5,
-        help="Counting line Y position as fraction of frame height (0.0-1.0, default: 0.5)",
-    )
-    parser.add_argument(
-        "--line-margin", type=int, default=40,
-        help="Half-height of counting zone in pixels (default: 40)",
-    )
-    parser.add_argument(
-        "--direction", choices=["down", "up", "both"], default="down",
-        help="Count vehicles going down, up, or both (default: down)",
-    )
-    parser.add_argument(
-        "--max-disappeared", type=int, default=50,
-        help="Frames before a lost track is removed (default: 50)",
-    )
-    parser.add_argument(
-        "--min-iou", type=float, default=0.15,
-        help="Minimum IoU to match detection to track (default: 0.15)",
-    )
-    parser.add_argument(
-        "--max-distance", type=float, default=200.0,
-        help="Max centroid distance fallback when IoU fails (default: 200)",
-    )
+    parser.add_argument("--line-y", type=float, default=0.5,
+                        help="Counting line Y position (0.0-1.0, default: 0.5)")
+    parser.add_argument("--line-margin", type=int, default=40,
+                        help="Half-height of counting zone in pixels (default: 40)")
+    parser.add_argument("--direction", choices=["down", "up", "both"], default="down",
+                        help="Count direction (default: down)")
+    parser.add_argument("--max-disappeared", type=int, default=50,
+                        help="Frames before a lost track is removed (default: 50)")
+    parser.add_argument("--min-iou", type=float, default=0.15,
+                        help="Minimum IoU to match detection to track (default: 0.15)")
+    parser.add_argument("--max-distance", type=float, default=200.0,
+                        help="Max centroid distance fallback (default: 200)")
 
-    # Input resolution
     input_group = parser.add_mutually_exclusive_group()
     input_group.add_argument("--input-small", action="store_const", dest="input_size", const=(640, 480))
     input_group.add_argument("--input", action="store_const", dest="input_size", const=(1024, 768))
     input_group.add_argument("--input-large", action="store_const", dest="input_size", const=(1280, 720))
 
-    # Display resolution
     display_group = parser.add_mutually_exclusive_group()
     display_group.add_argument("--display-small", action="store_const", dest="display_size", const=(640, 480))
     display_group.add_argument("--display", action="store_const", dest="display_size", const=(1024, 768))
