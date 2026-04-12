@@ -33,6 +33,13 @@ import cv2
 import numpy as np
 import yaml
 
+from hailo_common import (
+    HailoSession,
+    load_labels as _load_labels,
+    open_camera,
+    preprocess,
+)
+
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
 logging.basicConfig(format=LOG_FORMAT, level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -60,6 +67,11 @@ DEFAULT_COLOR = (200, 200, 200)
 def _signal_handler(signum, frame):
     global _shutdown
     _shutdown = True
+
+
+def load_labels(path: str) -> list[str]:
+    """Load class labels, falling back to HaGRID defaults."""
+    return _load_labels(path, default=GESTURE_CLASSES)
 
 
 # ---------------------------------------------------------------------------
@@ -144,37 +156,18 @@ def load_actions(path: str) -> dict[str, GestureAction]:
     return actions
 
 
-def load_labels(path: str) -> list[str]:
-    """Load class labels from a text file, falling back to HaGRID defaults."""
-    if not path or not os.path.isfile(path):
-        return GESTURE_CLASSES
-    with open(path) as f:
-        return [line.strip() for line in f if line.strip()]
-
-
 # ---------------------------------------------------------------------------
-# Inference helpers
+# Gesture-specific postprocessing (returns Detection dataclasses)
 # ---------------------------------------------------------------------------
 
-def preprocess(frame: np.ndarray, input_h: int, input_w: int) -> np.ndarray:
-    """Resize and convert a BGR frame for YOLO input."""
-    resized = cv2.resize(frame, (input_w, input_h))
-    return cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.uint8)
-
-
-def postprocess_nms(
+def postprocess_nms_gestures(
     output: np.ndarray,
     frame_h: int, frame_w: int,
     num_classes: int,
     conf_threshold: float,
     labels: list[str],
 ) -> list[Detection]:
-    """Parse Hailo on-chip NMS output into Detection objects.
-
-    Hailo NMS output is a flat array organized per class:
-      [num_det_class0, y_min, x_min, y_max, x_max, score, ..., num_det_class1, ...]
-    Coordinates are normalized [0, 1].
-    """
+    """Parse Hailo on-chip NMS output into Detection objects."""
     detections = []
     offset = 0
     for class_id in range(num_classes):
@@ -198,7 +191,7 @@ def postprocess_nms(
     return detections
 
 
-def postprocess_raw(
+def postprocess_raw_gestures(
     output: np.ndarray,
     frame_h: int, frame_w: int,
     input_h: int, input_w: int,
@@ -223,7 +216,6 @@ def postprocess_raw(
     if len(boxes) == 0:
         return []
 
-    # Center-format to corners, scaled to frame dimensions
     x1 = (boxes[:, 0] - boxes[:, 2] / 2) * frame_w / input_w
     y1 = (boxes[:, 1] - boxes[:, 3] / 2) * frame_h / input_h
     x2 = (boxes[:, 0] + boxes[:, 2] / 2) * frame_w / input_w
@@ -387,16 +379,9 @@ def draw_hud(
     # Hold progress bars for active gestures
     y_bar = 50
     for det in detections:
-        action = None
-        # Look up if there's a hold requirement
         state = tracker.states.get(det.class_name)
         if state:
-            # Find the action config from somewhere accessible
-            hold_time = 0
-            for gesture, gs in tracker.states.items():
-                if gesture == det.class_name:
-                    hold_time = getattr(gs, '_hold_time', 0)
-                    break
+            hold_time = getattr(state, '_hold_time', 0)
 
             if hold_time > 0:
                 held = now - state.first_seen
@@ -411,45 +396,10 @@ def draw_hud(
 
 
 # ---------------------------------------------------------------------------
-# Camera
-# ---------------------------------------------------------------------------
-
-def open_camera(source: str, width: int, height: int) -> cv2.VideoCapture:
-    """Open Pi Camera via libcamera or USB camera via V4L2."""
-    if source == "picam":
-        pipeline = (
-            f"libcamerasrc ! "
-            f"video/x-raw, width={width}, height={height}, format=RGB ! "
-            f"videoconvert ! "
-            f"appsink sync=false max-buffers=1 drop=true"
-        )
-        return cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-
-    # Force V4L2 backend to avoid GStreamer issues with USB cameras
-    cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    return cap
-
-
-# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 
 def run(args: argparse.Namespace) -> None:
-    try:
-        from hailo_platform import HEF, VDevice, FormatType, HailoSchedulingAlgorithm
-    except ImportError:
-        log.error(
-            "hailo_platform not found. Ensure hailo-all / hailo-h10-all is installed "
-            "and you are using system Python or a venv with --system-site-packages."
-        )
-        sys.exit(1)
-
-    if not os.path.isfile(args.model):
-        log.error("Model file not found: %s", args.model)
-        sys.exit(1)
-
     labels = load_labels(args.labels)
     actions = load_actions(args.actions)
     tracker = GestureTracker()
@@ -469,112 +419,73 @@ def run(args: argparse.Namespace) -> None:
             csv_writer.writerow(["timestamp", "gesture", "confidence", "hold_time", "action"])
         log.info("Logging gestures to: %s", args.log_csv)
 
-    # Load HEF
-    log.info("Loading model: %s", args.model)
-    hef = HEF(args.model)
+    with HailoSession(args.model) as session:
+        log.info("Model classes: %d | NMS: %s", len(labels), session.has_nms)
 
-    # Check if model has on-chip NMS
-    output_vstream_infos = hef.get_output_vstream_infos()
-    has_nms = any("nms" in info.name.lower() for info in output_vstream_infos)
-    if has_nms:
-        log.info("Model has on-chip NMS — using NMS output format")
+        # Open camera
+        log.info("Opening camera (source=%s)...", args.source)
+        cap = open_camera(args.source, args.capture_width, args.capture_height)
+        if not cap.isOpened():
+            log.error("Could not open camera.")
+            sys.exit(1)
 
-    # Get input info for shape
-    input_vstream_infos = hef.get_input_vstream_infos()
-    input_shape = input_vstream_infos[0].shape
-    input_h, input_w = input_shape[0], input_shape[1]
+        log.info("Running gesture recognition. Press 'q' to quit.")
+        prev_time = time.monotonic()
 
-    # --- Configure Hailo device ---
-    params = VDevice.create_params()
-    params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+        try:
+            while not _shutdown:
+                ret, frame = cap.read()
+                if not ret:
+                    log.warning("Frame capture failed — retrying...")
+                    continue
 
-    with VDevice(params) as vdevice:
-        log.info("Creating InferModel (async API)...")
-        infer_model = vdevice.create_infer_model(args.model)
-        infer_model.input().set_format_type(FormatType.UINT8)
-        infer_model.output().set_format_type(FormatType.FLOAT32)
+                # Inference
+                input_data = preprocess(frame, session.input_h, session.input_w)
+                output = session.infer(input_data)
 
-        # Get correct output shape from infer_model (not hef vstream info)
-        output_shape = infer_model.output().shape
+                # Postprocess
+                if session.has_nms:
+                    detections = postprocess_nms_gestures(
+                        output.flatten(), frame.shape[0], frame.shape[1],
+                        len(labels), args.confidence, labels,
+                    )
+                else:
+                    detections = postprocess_raw_gestures(
+                        output, frame.shape[0], frame.shape[1],
+                        session.input_h, session.input_w,
+                        args.confidence, args.iou, labels,
+                    )
 
-        log.info("Model input: %s | Classes: %d | NMS: %s", input_shape, len(labels), has_nms)
+                # Process gesture actions
+                process_gestures(detections, actions, tracker, csv_writer)
 
-        with infer_model.configure() as configured_model:
-            # Open camera
-            log.info("Opening camera (source=%s)...", args.source)
-            cap = open_camera(args.source, args.capture_width, args.capture_height)
-            if not cap.isOpened():
-                log.error("Could not open camera.")
-                sys.exit(1)
+                # FPS
+                now = time.monotonic()
+                dt = now - prev_time
+                prev_time = now
+                tracker.fps_samples.append(1.0 / dt if dt > 0 else 0)
+                fps = sum(tracker.fps_samples) / len(tracker.fps_samples)
 
-            log.info("Running gesture recognition. Press 'q' to quit.")
-            prev_time = time.monotonic()
-
-            try:
-                while not _shutdown:
-                    ret, frame = cap.read()
-                    if not ret:
-                        log.warning("Frame capture failed — retrying...")
-                        continue
-
-                    # Inference
-                    input_data = preprocess(frame, input_h, input_w)
-
-                    bindings = configured_model.create_bindings()
-                    bindings.input().set_buffer(np.expand_dims(input_data, axis=0))
-                    output_buf = np.empty([1] + list(output_shape), dtype=np.float32)
-                    bindings.output().set_buffer(output_buf)
-
-                    # Run async inference
-                    configured_model.wait_for_async_ready(timeout_ms=10000)
-                    job = configured_model.run_async([bindings])
-                    job.wait(timeout_ms=10000)
-
-                    output = output_buf[0]
-
-                    # Postprocess
-                    if has_nms:
-                        detections = postprocess_nms(
-                            output.flatten(), frame.shape[0], frame.shape[1],
-                            len(labels), args.confidence, labels,
-                        )
-                    else:
-                        detections = postprocess_raw(
-                            output, frame.shape[0], frame.shape[1],
-                            input_h, input_w,
-                            args.confidence, args.iou, labels,
-                        )
-
-                    # Process gesture actions
-                    process_gestures(detections, actions, tracker, csv_writer)
-
-                    # FPS
-                    now = time.monotonic()
-                    dt = now - prev_time
-                    prev_time = now
-                    tracker.fps_samples.append(1.0 / dt if dt > 0 else 0)
-                    fps = sum(tracker.fps_samples) / len(tracker.fps_samples)
-
-                    if args.display:
-                        draw_detections(frame, detections)
-                        draw_hud(frame, tracker, detections, fps)
-                        cv2.imshow("Gesture Recognition - Hailo-10H", frame)
-                        if cv2.waitKey(1) & 0xFF == ord("q"):
-                            break
-                    else:
-                        # Headless: periodic status log
-                        if int(now) % 5 == 0 and dt < 0.3:
-                            active = [d.class_name for d in detections]
-                            if active:
-                                log.info("FPS: %.1f | Active: %s", fps, ", ".join(active))
-
-            finally:
-                cap.release()
                 if args.display:
-                    cv2.destroyAllWindows()
-                if csv_file:
-                    csv_file.close()
-                log.info("Stopped. Total gestures triggered: %d", len(tracker.history))
+                    draw_detections(frame, detections)
+                    draw_hud(frame, tracker, detections, fps)
+                    cv2.imshow("Gesture Recognition - Hailo-10H", frame)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
+                else:
+                    # Headless: periodic status log
+                    if int(now) % 5 == 0 and dt < 0.3:
+                        active = [d.class_name for d in detections]
+                        if active:
+                            log.info("FPS: %.1f | Active: %s", fps, ", ".join(active))
+
+        finally:
+            cap.release()
+            if args.display:
+                cv2.destroyAllWindows()
+            if csv_file:
+                csv_file.close()
+            log.info("Stopped. Total gestures triggered: %d", len(tracker.history))
 
 
 def main() -> None:

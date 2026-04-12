@@ -24,7 +24,17 @@ import signal
 import sys
 
 import cv2
-import numpy as np
+
+from hailo_common import (
+    COCO_CLASSES,
+    HailoSession,
+    draw_detections,
+    load_labels,
+    open_camera,
+    postprocess_nms,
+    postprocess_raw,
+    preprocess,
+)
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
 logging.basicConfig(format=LOG_FORMAT, level=logging.INFO)
@@ -32,292 +42,69 @@ log = logging.getLogger(__name__)
 
 _shutdown = False
 
-# COCO class names (80 classes)
-COCO_CLASSES = [
-    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
-    "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
-    "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra",
-    "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
-    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove",
-    "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup",
-    "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
-    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
-    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
-    "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
-    "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
-    "hair drier", "toothbrush",
-]
-
 
 def _signal_handler(signum, frame):
     global _shutdown
     _shutdown = True
 
 
-def load_labels(path: str) -> list[str]:
-    """Load class labels from a text file (one label per line)."""
-    if not path or not os.path.isfile(path):
-        return COCO_CLASSES
-    with open(path) as f:
-        return [line.strip() for line in f if line.strip()]
-
-
-def preprocess(frame: np.ndarray, input_h: int, input_w: int) -> np.ndarray:
-    """Resize and normalize a BGR frame for YOLO input."""
-    resized = cv2.resize(frame, (input_w, input_h))
-    # Convert BGR to RGB, normalize to [0, 1], NHWC uint8 for Hailo
-    rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-    return rgb.astype(np.uint8)
-
-
-def postprocess_nms(
-    output: np.ndarray,
-    frame_h: int,
-    frame_w: int,
-    num_classes: int,
-    conf_threshold: float,
-) -> list[tuple]:
-    """
-    Parse Hailo on-chip NMS output and return detections.
-
-    Hailo NMS output is a flat array organized per class:
-      [num_det_class0, y_min, x_min, y_max, x_max, score, ..., num_det_class1, ...]
-    Coordinates are normalized [0, 1].
-
-    Returns list of (x1, y1, x2, y2, confidence, class_id).
-    """
-    detections = []
-    offset = 0
-    for class_id in range(num_classes):
-        if offset >= len(output):
-            break
-        num_dets = int(output[offset])
-        offset += 1
-        for _ in range(num_dets):
-            if offset + 5 > len(output):
-                break
-            y_min, x_min, y_max, x_max, score = output[offset:offset + 5]
-            offset += 5
-            if score >= conf_threshold:
-                detections.append((
-                    int(x_min * frame_w), int(y_min * frame_h),
-                    int(x_max * frame_w), int(y_max * frame_h),
-                    float(score), class_id,
-                ))
-    return detections
-
-
-def postprocess_raw(
-    output: np.ndarray,
-    frame_h: int,
-    frame_w: int,
-    input_h: int,
-    input_w: int,
-    conf_threshold: float,
-    iou_threshold: float,
-) -> list[tuple]:
-    """
-    Parse raw YOLO output tensor (no on-chip NMS) and return detections.
-
-    Handles the standard YOLO output format: (1, num_detections, 4 + num_classes)
-    where the 4 values are [x_center, y_center, width, height].
-
-    Returns list of (x1, y1, x2, y2, confidence, class_id).
-    """
-    # Squeeze batch dimension
-    if output.ndim == 3:
-        output = output[0]
-
-    # If shape is (features, detections), transpose to (detections, features)
-    if output.shape[0] < output.shape[1]:
-        output = output.T
-
-    boxes = output[:, :4]
-    scores = output[:, 4:]
-
-    # Get best class per detection
-    class_ids = np.argmax(scores, axis=1)
-    confidences = scores[np.arange(len(class_ids)), class_ids]
-
-    # Filter by confidence
-    mask = confidences >= conf_threshold
-    boxes = boxes[mask]
-    confidences = confidences[mask]
-    class_ids = class_ids[mask]
-
-    if len(boxes) == 0:
-        return []
-
-    # Convert center format to corner format
-    x1 = (boxes[:, 0] - boxes[:, 2] / 2) * frame_w / input_w
-    y1 = (boxes[:, 1] - boxes[:, 3] / 2) * frame_h / input_h
-    x2 = (boxes[:, 0] + boxes[:, 2] / 2) * frame_w / input_w
-    y2 = (boxes[:, 1] + boxes[:, 3] / 2) * frame_h / input_h
-
-    # NMS
-    rects = np.stack([x1, y1, x2 - x1, y2 - y1], axis=1).tolist()
-    indices = cv2.dnn.NMSBoxes(rects, confidences.tolist(), conf_threshold, iou_threshold)
-
-    detections = []
-    for i in indices:
-        idx = i if isinstance(i, int) else i[0]
-        detections.append((
-            int(x1[idx]), int(y1[idx]), int(x2[idx]), int(y2[idx]),
-            float(confidences[idx]), int(class_ids[idx]),
-        ))
-    return detections
-
-
-def draw_detections(
-    frame: np.ndarray, detections: list[tuple], labels: list[str]
-) -> np.ndarray:
-    """Draw bounding boxes and labels on the frame."""
-    for x1, y1, x2, y2, conf, cls_id in detections:
-        label = labels[cls_id] if cls_id < len(labels) else str(cls_id)
-        text = f"{label} {conf:.2f}"
-
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-        cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw, y1), (0, 255, 0), -1)
-        cv2.putText(frame, text, (x1, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-    return frame
-
-
-def open_camera(source: str, width: int, height: int) -> cv2.VideoCapture:
-    """Open a camera source — Pi Camera via libcamera or USB via V4L2."""
-    if source == "picam":
-        pipeline = (
-            f"libcamerasrc ! "
-            f"video/x-raw, width={width}, height={height}, format=RGB ! "
-            f"videoconvert ! "
-            f"appsink sync=false max-buffers=1 drop=true"
-        )
-        return cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-
-    # USB camera — force V4L2 backend to avoid GStreamer issues
-    cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    return cap
-
-
 def run(args: argparse.Namespace) -> None:
-    try:
-        from hailo_platform import HEF, VDevice, FormatType, HailoSchedulingAlgorithm
-    except ImportError:
-        log.error(
-            "hailo_platform not found. Ensure hailo-all / hailo-h10-all is installed "
-            "and you are using system Python or a venv with --system-site-packages."
-        )
-        sys.exit(1)
-
-    if not os.path.isfile(args.model):
-        log.error("Model file not found: %s", args.model)
-        sys.exit(1)
-
     labels = load_labels(args.labels)
 
-    # --- Load HEF model ---
-    log.info("Loading HEF model: %s", args.model)
-    hef = HEF(args.model)
+    with HailoSession(args.model) as session:
+        # --- Open camera ---
+        cap_w, cap_h = args.input_size
+        log.info("Opening camera (source=%s, capture=%dx%d)...", args.source, cap_w, cap_h)
+        cap = open_camera(args.source, cap_w, cap_h)
+        if not cap.isOpened():
+            log.error("Could not open camera. Check connection.")
+            sys.exit(1)
 
-    # Check if model has on-chip NMS
-    output_vstream_infos = hef.get_output_vstream_infos()
-    has_nms = any("nms" in info.name.lower() for info in output_vstream_infos)
-    if has_nms:
-        log.info("Model has on-chip NMS — using NMS output format")
+        log.info("Running YOLO inference. Press 'q' to quit.")
+        frame_count = 0
 
-    # Get input info for shape
-    input_vstream_infos = hef.get_input_vstream_infos()
-    input_shape = input_vstream_infos[0].shape
-    input_h, input_w = input_shape[0], input_shape[1]
-    log.info("Model input shape: %s", input_shape)
+        try:
+            while not _shutdown:
+                ret, frame = cap.read()
+                if not ret:
+                    log.warning("Failed to fetch frame — retrying...")
+                    continue
 
-    # --- Configure Hailo device ---
-    params = VDevice.create_params()
-    params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+                input_data = preprocess(frame, session.input_h, session.input_w)
+                output = session.infer(input_data)
 
-    with VDevice(params) as vdevice:
-        # InferModel API — required for Hailo-10H, also works on Hailo-8
-        log.info("Creating InferModel (async API)...")
-        infer_model = vdevice.create_infer_model(args.model)
-        infer_model.input().set_format_type(FormatType.UINT8)
-        infer_model.output().set_format_type(FormatType.FLOAT32)
+                if session.has_nms:
+                    detections = postprocess_nms(
+                        output.flatten(),
+                        frame.shape[0], frame.shape[1],
+                        len(labels),
+                        args.confidence,
+                    )
+                else:
+                    detections = postprocess_raw(
+                        output,
+                        frame.shape[0], frame.shape[1],
+                        session.input_h, session.input_w,
+                        args.confidence, args.iou,
+                    )
+                frame = draw_detections(frame, detections, labels)
 
-        # Get correct output shape from infer_model (not hef vstream info,
-        # which omits NMS per-class count fields)
-        output_shape = infer_model.output().shape
-        log.info("InferModel output shape: %s", output_shape)
+                frame_count += 1
+                if frame_count % 30 == 0:
+                    fps = cap.get(cv2.CAP_PROP_FPS) or 0
+                    log.info("Detections: %d | Camera FPS: %.1f", len(detections), fps)
 
-        with infer_model.configure() as configured_model:
-            # --- Open camera ---
-            cap_w, cap_h = args.input_size
-            log.info("Opening camera (source=%s, capture=%dx%d)...", args.source, cap_w, cap_h)
-            cap = open_camera(args.source, cap_w, cap_h)
-            if not cap.isOpened():
-                log.error("Could not open camera. Check connection.")
-                sys.exit(1)
-
-            log.info("Running YOLO inference. Press 'q' to quit.")
-            frame_count = 0
-
-            try:
-                while not _shutdown:
-                    ret, frame = cap.read()
-                    if not ret:
-                        log.warning("Failed to fetch frame — retrying...")
-                        continue
-
-                    # Preprocess
-                    input_data = preprocess(frame, input_h, input_w)
-
-                    # Create bindings and set input/output buffers
-                    bindings = configured_model.create_bindings()
-                    bindings.input().set_buffer(np.expand_dims(input_data, axis=0))
-                    output_buf = np.empty([1] + list(output_shape), dtype=np.float32)
-                    bindings.output().set_buffer(output_buf)
-
-                    # Run async inference
-                    configured_model.wait_for_async_ready(timeout_ms=10000)
-                    job = configured_model.run_async([bindings])
-                    job.wait(timeout_ms=10000)
-
-                    output = output_buf[0]
-
-                    # Postprocess and draw
-                    if has_nms:
-                        detections = postprocess_nms(
-                            output.flatten(),
-                            frame.shape[0], frame.shape[1],
-                            len(labels),
-                            args.confidence,
-                        )
-                    else:
-                        detections = postprocess_raw(
-                            output,
-                            frame.shape[0], frame.shape[1],
-                            input_h, input_w,
-                            args.confidence, args.iou,
-                        )
-                    frame = draw_detections(frame, detections, labels)
-
-                    # Show FPS every 30 frames
-                    frame_count += 1
-                    if frame_count % 30 == 0:
-                        fps = cap.get(cv2.CAP_PROP_FPS) or 0
-                        log.info("Detections: %d | Camera FPS: %.1f", len(detections), fps)
-
-                    if args.display_size:
-                        dw, dh = args.display_size
-                        show = cv2.resize(frame, (dw, dh)) if (frame.shape[1], frame.shape[0]) != (dw, dh) else frame
-                        cv2.imshow("YOLO Hailo-10H", show)
-                        if cv2.waitKey(1) & 0xFF == ord("q"):
-                            break
-            finally:
-                cap.release()
                 if args.display_size:
-                    cv2.destroyAllWindows()
-                log.info("Stopped.")
+                    dw, dh = args.display_size
+                    show = cv2.resize(frame, (dw, dh)) if (frame.shape[1], frame.shape[0]) != (dw, dh) else frame
+                    cv2.imshow("YOLO Hailo-10H", show)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
+        finally:
+            cap.release()
+            if args.display_size:
+                cv2.destroyAllWindows()
+            log.info("Stopped.")
 
 
 def main() -> None:

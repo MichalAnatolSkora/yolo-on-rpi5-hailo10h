@@ -1,11 +1,32 @@
 #!/bin/bash
 set -euo pipefail
 
-# Downloads a pre-compiled YOLOv12n HEF model for Hailo-10H and installs
+# Downloads a pre-compiled YOLOv11 HEF model for Hailo-10H and installs
 # Python dependencies for inference. Idempotent — safe to run multiple times.
+#
+# Usage:
+#   ./install_yolo11.sh          # default: yolov11n
+#   ./install_yolo11.sh n        # yolov11n (nano)
+#   ./install_yolo11.sh m        # yolov11m (medium)
+#   ./install_yolo11.sh l        # yolov11l (large)
+#   ./install_yolo11.sh x        # yolov11x (extra-large)
+
+VARIANT="${1:-n}"
+
+case "$VARIANT" in
+    n|m|l|x) ;;
+    *)
+        echo "Usage: $0 [n|m|l|x]"
+        echo "  n = yolov11n (nano, default)"
+        echo "  m = yolov11m (medium)"
+        echo "  l = yolov11l (large)"
+        echo "  x = yolov11x (extra-large)"
+        exit 1
+        ;;
+esac
 
 MODEL_DIR="${HOME}/hailo_models"
-MODEL_NAME="yolov11n"
+MODEL_NAME="yolov11${VARIANT}"
 HEF_FILE="${MODEL_DIR}/${MODEL_NAME}.hef"
 VENV_DIR="${HOME}/hailo_venv"
 
@@ -44,7 +65,7 @@ if ! dpkg -s "$HAILO_PKG" &>/dev/null; then
 fi
 
 echo "=========================================================="
-echo " YOLO Model Setup for ${HAILO_ARCH} (v5.1.1 Compatible)  "
+echo " ${MODEL_NAME} Model Setup for ${HAILO_ARCH} (v5.1.1 Compatible)"
 echo "=========================================================="
 
 mkdir -p "$MODEL_DIR"
@@ -132,12 +153,17 @@ PYEOF
     log " -> Downloaded: $HEF_FILE"
 fi
 
+RUN_CMD="python run_yolo11.py --display"
+if [[ "$VARIANT" != "n" ]]; then
+    RUN_CMD="python run_yolo11.py --model $HEF_FILE --display"
+fi
+
 echo ""
 echo "=========================================================="
-echo " YOLO setup complete!                                     "
+echo " ${MODEL_NAME} setup complete!                            "
 echo "                                                          "
 echo " Model: $HEF_FILE                                        "
 echo "                                                          "
 echo " Run inference:                                           "
-echo "   python run_yolo11.py --display                        "
+echo "   ${RUN_CMD}                                             "
 echo "=========================================================="

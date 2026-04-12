@@ -24,9 +24,8 @@ from collections import OrderedDict
 import cv2
 import numpy as np
 
-from run_yolo11 import (
-    COCO_CLASSES,
-    draw_detections,
+from hailo_common import (
+    HailoSession,
     load_labels,
     open_camera,
     postprocess_nms,
@@ -307,19 +306,6 @@ class VehicleCounter:
         return crossed
 
 
-def _compute_iou(box_a: tuple, box_b: tuple) -> float:
-    """Compute IoU between two boxes (x1, y1, x2, y2)."""
-    xa = max(box_a[0], box_b[0])
-    ya = max(box_a[1], box_b[1])
-    xb = min(box_a[2], box_b[2])
-    yb = min(box_a[3], box_b[3])
-    inter = max(0, xb - xa) * max(0, yb - ya)
-    area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
-    area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
-    union = area_a + area_b - inter
-    return inter / union if union > 0 else 0.0
-
-
 def deduplicate_detections(detections: list[tuple], iou_threshold: float = 0.45) -> list[tuple]:
     """
     Remove overlapping detections of the same class, keeping the highest confidence.
@@ -327,13 +313,12 @@ def deduplicate_detections(detections: list[tuple], iou_threshold: float = 0.45)
     """
     if len(detections) <= 1:
         return detections
-    # Sort by confidence descending
     dets = sorted(detections, key=lambda d: d[4], reverse=True)
     keep = []
     for det in dets:
         suppressed = False
         for kept in keep:
-            if det[5] == kept[5] and _compute_iou(det[:4], kept[:4]) > iou_threshold:
+            if det[5] == kept[5] and IOUTracker._iou(det[:4], kept[:4]) > iou_threshold:
                 suppressed = True
                 break
         if not suppressed:
@@ -390,34 +375,7 @@ def draw_tracking(
 
 
 def run(args: argparse.Namespace) -> None:
-    try:
-        from hailo_platform import HEF, VDevice, FormatType, HailoSchedulingAlgorithm
-    except ImportError:
-        log.error(
-            "hailo_platform not found. Ensure hailo-all / hailo-h10-all is installed "
-            "and you are using system Python or a venv with --system-site-packages."
-        )
-        sys.exit(1)
-
-    if not os.path.isfile(args.model):
-        log.error("Model file not found: %s", args.model)
-        sys.exit(1)
-
     labels = load_labels(args.labels)
-
-    # --- Load HEF model ---
-    log.info("Loading HEF model: %s", args.model)
-    hef = HEF(args.model)
-
-    output_vstream_infos = hef.get_output_vstream_infos()
-    has_nms = any("nms" in info.name.lower() for info in output_vstream_infos)
-    if has_nms:
-        log.info("Model has on-chip NMS — using NMS output format")
-
-    input_vstream_infos = hef.get_input_vstream_infos()
-    input_shape = input_vstream_infos[0].shape
-    input_h, input_w = input_shape[0], input_shape[1]
-    log.info("Model input shape: %s", input_shape)
 
     # --- Init tracker and counter ---
     tracker = IOUTracker(
@@ -435,103 +393,80 @@ def run(args: argparse.Namespace) -> None:
         args.line_y * 100, args.direction, args.min_iou, args.max_distance, args.max_disappeared,
     )
 
-    # --- Configure Hailo device ---
-    params = VDevice.create_params()
-    params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+    with HailoSession(args.model) as session:
+        cap_w, cap_h = args.input_size
+        log.info("Opening camera (source=%s, capture=%dx%d)...", args.source, cap_w, cap_h)
+        cap = open_camera(args.source, cap_w, cap_h)
+        if not cap.isOpened():
+            log.error("Could not open camera. Check connection.")
+            sys.exit(1)
 
-    with VDevice(params) as vdevice:
-        log.info("Creating InferModel (async API)...")
-        infer_model = vdevice.create_infer_model(args.model)
-        infer_model.input().set_format_type(FormatType.UINT8)
-        infer_model.output().set_format_type(FormatType.FLOAT32)
+        log.info("Running vehicle tracking. Press 'q' to quit.")
+        frame_count = 0
 
-        output_shape = infer_model.output().shape
-        log.info("InferModel output shape: %s", output_shape)
+        try:
+            while not _shutdown:
+                ret, frame = cap.read()
+                if not ret:
+                    log.warning("Failed to fetch frame — retrying...")
+                    continue
 
-        with infer_model.configure() as configured_model:
-            cap_w, cap_h = args.input_size
-            log.info("Opening camera (source=%s, capture=%dx%d)...", args.source, cap_w, cap_h)
-            cap = open_camera(args.source, cap_w, cap_h)
-            if not cap.isOpened():
-                log.error("Could not open camera. Check connection.")
-                sys.exit(1)
+                input_data = preprocess(frame, session.input_h, session.input_w)
+                output = session.infer(input_data)
 
-            log.info("Running vehicle tracking. Press 'q' to quit.")
-            frame_count = 0
+                if session.has_nms:
+                    detections = postprocess_nms(
+                        output.flatten(),
+                        frame.shape[0], frame.shape[1],
+                        len(labels),
+                        args.confidence,
+                    )
+                else:
+                    detections = postprocess_raw(
+                        output,
+                        frame.shape[0], frame.shape[1],
+                        session.input_h, session.input_w,
+                        args.confidence, args.iou,
+                    )
 
-            try:
-                while not _shutdown:
-                    ret, frame = cap.read()
-                    if not ret:
-                        log.warning("Failed to fetch frame — retrying...")
-                        continue
+                # Filter to vehicles only (unless --all-classes)
+                if args.all_classes:
+                    vehicle_dets = detections
+                else:
+                    vehicle_dets = [d for d in detections if d[5] in VEHICLE_CLASS_IDS]
 
-                    input_data = preprocess(frame, input_h, input_w)
+                # Deduplicate overlapping boxes (keeps highest confidence per overlap group)
+                if args.deduplicate:
+                    vehicle_dets = deduplicate_detections(vehicle_dets, iou_threshold=args.iou)
 
-                    bindings = configured_model.create_bindings()
-                    bindings.input().set_buffer(np.expand_dims(input_data, axis=0))
-                    output_buf = np.empty([1] + list(output_shape), dtype=np.float32)
-                    bindings.output().set_buffer(output_buf)
+                # Track
+                tracked = tracker.update(vehicle_dets)
 
-                    configured_model.wait_for_async_ready(timeout_ms=10000)
-                    job = configured_model.run_async([bindings])
-                    job.wait(timeout_ms=10000)
+                # Count
+                crossed = counter.update(tracked, frame.shape[0])
 
-                    output = output_buf[0]
+                # Draw
+                frame = draw_tracking(frame, tracked, labels, counter, crossed)
 
-                    if has_nms:
-                        detections = postprocess_nms(
-                            output.flatten(),
-                            frame.shape[0], frame.shape[1],
-                            len(labels),
-                            args.confidence,
-                        )
-                    else:
-                        detections = postprocess_raw(
-                            output,
-                            frame.shape[0], frame.shape[1],
-                            input_h, input_w,
-                            args.confidence, args.iou,
-                        )
+                frame_count += 1
+                if frame_count % 30 == 0:
+                    fps = cap.get(cv2.CAP_PROP_FPS) or 0
+                    log.info(
+                        "Tracked: %d | Count: %d | FPS: %.1f",
+                        len(tracked), counter.total, fps,
+                    )
 
-                    # Filter to vehicles only (unless --all-classes)
-                    if args.all_classes:
-                        vehicle_dets = detections
-                    else:
-                        vehicle_dets = [d for d in detections if d[5] in VEHICLE_CLASS_IDS]
-
-                    # Deduplicate overlapping boxes (keeps highest confidence per overlap group)
-                    if args.deduplicate:
-                        vehicle_dets = deduplicate_detections(vehicle_dets, iou_threshold=args.iou)
-
-                    # Track
-                    tracked = tracker.update(vehicle_dets)
-
-                    # Count
-                    crossed = counter.update(tracked, frame.shape[0])
-
-                    # Draw
-                    frame = draw_tracking(frame, tracked, labels, counter, crossed)
-
-                    frame_count += 1
-                    if frame_count % 30 == 0:
-                        fps = cap.get(cv2.CAP_PROP_FPS) or 0
-                        log.info(
-                            "Tracked: %d | Count: %d | FPS: %.1f",
-                            len(tracked), counter.total, fps,
-                        )
-
-                    if args.display_size:
-                        dw, dh = args.display_size
-                        show = cv2.resize(frame, (dw, dh)) if (frame.shape[1], frame.shape[0]) != (dw, dh) else frame
-                        cv2.imshow("Vehicle Tracking - Hailo-10H", show)
-                        if cv2.waitKey(1) & 0xFF == ord("q"):
-                            break
-            finally:
-                cap.release()
                 if args.display_size:
-                    cv2.destroyAllWindows()
-                log.info("Final count: %d vehicles", counter.total)
+                    dw, dh = args.display_size
+                    show = cv2.resize(frame, (dw, dh)) if (frame.shape[1], frame.shape[0]) != (dw, dh) else frame
+                    cv2.imshow("Vehicle Tracking - Hailo-10H", show)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
+        finally:
+            cap.release()
+            if args.display_size:
+                cv2.destroyAllWindows()
+            log.info("Final count: %d vehicles", counter.total)
 
 
 def main() -> None:
