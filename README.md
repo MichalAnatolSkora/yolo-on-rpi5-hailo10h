@@ -4,6 +4,22 @@
 
 One-click setup for running YOLO object detection on Raspberry Pi 5 with the Hailo-10H AI accelerator. Also runs locally on macOS / Linux / Windows laptops for development and testing.
 
+## Vehicle Tracking Flow — Quick Start
+
+1. **Set up counting lines** — draw trip-wire lines interactively on a frame from your camera. Saves to `line_config.json`:
+   ```bash
+   python run_yolo11_tracking.py --setup --source 0
+   ```
+   Click two points per line, press **Enter** to save, **q** to quit. See [Multi-Line Counting with Interactive Setup](#multi-line-counting-with-interactive-setup).
+
+2. **Start counting + recording** — config is auto-loaded from `./line_config.json`. Adds an MP4 recording of the annotated preview:
+   ```bash
+   python run_yolo11_tracking.py --source 0 --display --record traffic.mp4
+   ```
+   Press **q** in the preview window to stop. See [Recording the Preview to Video](#recording-the-preview-to-video).
+
+On Raspberry Pi use `--source picam` (libcamera) or `--source /dev/video0` (USB). On macOS/Linux laptops add `--model yolo11n.pt` (local Ultralytics). Full options below.
+
 ## Run Locally on MacBook / Laptop
 
 No Hailo hardware needed. Uses Ultralytics with CPU or Apple Silicon MPS acceleration.
@@ -158,6 +174,80 @@ By default only vehicles (car, motorcycle, bus, truck) are tracked. Use `--all-c
 | `--deduplicate` | off | Remove overlapping detections before tracking |
 
 All camera/display/model flags from `run_yolo11.py` are supported (`--display-large`, `--input-large`, `--source`, `--model`, `--confidence`, etc.).
+
+### Multi-Line Counting with Interactive Setup
+
+In addition to the single horizontal line above, `run_yolo11_tracking.py` supports **arbitrary-angle counting lines**, **multiple lines at once**, and an **interactive setup mode** where you draw lines directly on the camera feed. Each line keeps its own per-direction count.
+
+**1. Draw your lines (setup mode):**
+
+```bash
+# Opens camera feed — click two points per line, press Enter to save
+python run_yolo11_tracking.py --setup --source 0
+
+# Custom config file path
+python run_yolo11_tracking.py --setup --source 0 --config my_lines.json
+```
+
+In setup mode:
+- **Click** two points to define a counting line
+- **Enter** — save config and exit
+- **u** — undo last line
+- **Esc** — cancel current in-progress line
+- **q** — quit without saving
+
+**2. Run counting:**
+
+```bash
+# Raspberry Pi + Hailo
+python run_yolo11_tracking.py --config line_config.json --display
+
+# MacBook / laptop
+python run_yolo11_tracking.py --config line_config.json --model yolo11n.pt --source 0 --display
+
+# With buffer zone (vehicles counted as soon as they enter the zone)
+python run_yolo11_tracking.py --config line_config.json --display --buffer 20
+```
+
+The config file stores lines as normalized coordinates (0.0–1.0), so it works at any resolution:
+
+```json
+{
+  "lines": [
+    {"name": "northbound", "p1": [0.10, 0.55], "p2": [0.95, 0.55], "direction": "both"},
+    {"name": "driveway", "p1": [0.24, 0.07], "p2": [0.26, 0.96], "direction": "positive"}
+  ]
+}
+```
+
+Line names and directions (`both`, `positive`, `negative`) can be edited directly in the JSON. The arrow overlay on each line shows the "positive" crossing direction; per-line counts appear next to the line label.
+
+When `--config` is provided (or `./line_config.json` exists in the working directory — it is auto-loaded), the multi-line counter is used instead of the legacy `--line-y` horizontal line. Pass `--no-config` to force legacy mode even if `line_config.json` is present.
+
+### Recording the Preview to Video
+
+Use `--record` to save an MP4 of the annotated preview (with bounding boxes, lines, counts, and labels rendered in). Works in both legacy and multi-line modes, with or without `--display`.
+
+```bash
+# Auto-named file: recording_YYYYMMDD_HHMMSS.mp4 in the current directory
+python run_yolo11_tracking.py --config line_config.json --display --record
+
+# Custom output path
+python run_yolo11_tracking.py --config line_config.json --display --record out.mp4
+
+# Headless recording (no preview window)
+python run_yolo11_tracking.py --config line_config.json --record traffic.mp4
+
+# Custom frame rate
+python run_yolo11_tracking.py --config line_config.json --display --record --record-fps 30
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--record [PATH]` | off | Record annotated frames to MP4. Path optional — auto-timestamped if omitted. |
+| `--record-fps` | `20` | Frame rate written to the file |
+
+The recording is at the full capture resolution (`--input` / `--input-large`), not the resized `--display` size, so detail isn't lost. Stop with `q` in the preview window or `Ctrl+C` — the file is finalized on exit.
 
 ## Security Camera: Person Line-Crossing Alert
 
