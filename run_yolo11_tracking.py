@@ -22,6 +22,7 @@ Legacy horizontal-line mode (no --config):
 """
 
 import argparse
+import atexit
 import json
 import logging
 import os
@@ -732,6 +733,19 @@ def run(args: argparse.Namespace) -> None:
             record_path = args.record or time.strftime("recording_%Y%m%d_%H%M%S.mp4")
             os.makedirs(os.path.dirname(os.path.abspath(record_path)), exist_ok=True)
 
+        # Safety net: release writer on any exit path (SIGHUP, uncaught exception, sys.exit).
+        # SIGINT/SIGTERM still go through the finally block below; this catches terminal-close.
+        _writer_ref = {"w": None, "path": None}
+
+        def _atexit_release():
+            w = _writer_ref["w"]
+            if w is not None:
+                w.release()
+                log.info("Saved recording (atexit): %s", _writer_ref["path"])
+                _writer_ref["w"] = None
+
+        atexit.register(_atexit_release)
+
         try:
             while not _shutdown:
                 ret, frame = cap.read()
@@ -800,6 +814,8 @@ def run(args: argparse.Namespace) -> None:
                             if w.isOpened():
                                 writer = w
                                 record_path = path
+                                _writer_ref["w"] = writer
+                                _writer_ref["path"] = record_path
                                 log.info("Recording to %s (%s, %dx%d @ %.1f fps)",
                                          record_path, codec, rec_w, rec_h, args.record_fps)
                                 break
@@ -816,10 +832,18 @@ def run(args: argparse.Namespace) -> None:
                     cv2.imshow("Vehicle Tracking", show)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
+                    # Detect window close (X button) — property drops below 1 when destroyed
+                    try:
+                        if cv2.getWindowProperty("Vehicle Tracking", cv2.WND_PROP_VISIBLE) < 1:
+                            log.info("Preview window closed — stopping.")
+                            break
+                    except cv2.error:
+                        pass
         finally:
             cap.release()
             if writer is not None:
                 writer.release()
+                _writer_ref["w"] = None  # prevent double-release from atexit
                 log.info("Saved recording: %s", record_path)
             if args.display_size:
                 cv2.destroyAllWindows()
@@ -834,6 +858,10 @@ def run(args: argparse.Namespace) -> None:
 def main() -> None:
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
+    # SIGHUP: terminal closed or ssh session dropped — save the recording instead of dying abruptly.
+    # Not available on Windows, so guard with hasattr.
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, _signal_handler)
 
     parser = argparse.ArgumentParser(
         description="Track and count vehicles using YOLO (Hailo NPU or local CPU/MPS)"
