@@ -119,6 +119,7 @@ class IOUTracker:
             "det": det,              # full detection tuple
             "vx": 0.0, "vy": 0.0,   # velocity of centroid
             "disappeared": 0,
+            "hits": 1,               # number of frames track has been matched
         }
         self.next_id += 1
         return obj_id
@@ -206,6 +207,7 @@ class IOUTracker:
             self.tracks[tid]["bbox"] = det[:4]
             self.tracks[tid]["det"] = det
             self.tracks[tid]["disappeared"] = 0
+            self.tracks[tid]["hits"] = self.tracks[tid].get("hits", 0) + 1
             result[tid] = det
 
             matched_tracks.add(r)
@@ -258,6 +260,7 @@ class IOUTracker:
                 self.tracks[tid]["bbox"] = det[:4]
                 self.tracks[tid]["det"] = det
                 self.tracks[tid]["disappeared"] = 0
+                self.tracks[tid]["hits"] = self.tracks[tid].get("hits", 0) + 1
                 result[tid] = det
 
                 matched_tracks.add(r)
@@ -346,9 +349,10 @@ class MultiLineVehicleCounter:
     via cross-product sign change -- works at any angle.
     """
 
-    def __init__(self, lines_config: list[dict], buffer_px: int = 0):
+    def __init__(self, lines_config: list[dict], buffer_px: int = 0, min_hits: int = 3):
         self.lines = lines_config
         self.buffer_px = buffer_px
+        self.min_hits = min_hits
         self.prev_centroids: dict[int, tuple[float, float]] = {}
         self.counted: dict[int, set[str]] = {}  # track_id -> set of line names already counted
         self.counts: dict[str, dict[str, int]] = {
@@ -367,9 +371,15 @@ class MultiLineVehicleCounter:
         return sum(c["positive"] + c["negative"] for c in self.counts.values())
 
     def update(
-        self, tracked: dict[int, tuple], frame_w: int, frame_h: int
+        self, tracked: dict[int, tuple], frame_w: int, frame_h: int,
+        tracker: "IOUTracker | None" = None,
     ) -> list[tuple[int, str, str]]:
-        """Returns list of (track_id, line_name, "positive"|"negative")."""
+        """Returns list of (track_id, line_name, "positive"|"negative").
+
+        If ``tracker`` is given, only tracks with ``hits >= min_hits`` are counted.
+        Unconfirmed tracks still update their prev_centroid so that once confirmed
+        the next crossing is detected cleanly.
+        """
         crossings = []
 
         for tid, det in tracked.items():
@@ -377,7 +387,12 @@ class MultiLineVehicleCounter:
             cy = (det[1] + det[3]) / 2.0
             curr = (cx, cy)
 
-            if tid in self.prev_centroids:
+            confirmed = True
+            if tracker is not None:
+                hits = tracker.tracks.get(tid, {}).get("hits", 0)
+                confirmed = hits >= self.min_hits
+
+            if confirmed and tid in self.prev_centroids:
                 prev = self.prev_centroids[tid]
                 for line in self.lines:
                     name = line["name"]
@@ -418,8 +433,18 @@ class MultiLineVehicleCounter:
         return crossings
 
 
-def deduplicate_detections(detections: list[tuple], iou_threshold: float = 0.45) -> list[tuple]:
-    """Remove overlapping detections of the same class, keeping highest confidence."""
+def deduplicate_detections(
+    detections: list[tuple],
+    iou_threshold: float = 0.45,
+    equiv_classes: set[int] | None = None,
+) -> list[tuple]:
+    """Remove overlapping detections, keeping highest confidence.
+
+    By default only suppresses overlaps within the same class. When
+    ``equiv_classes`` is given, all classes in that set are treated as the
+    same object for dedup purposes (e.g. a vehicle detected as both 'car'
+    and 'truck' is collapsed to one detection).
+    """
     if len(detections) <= 1:
         return detections
     dets = sorted(detections, key=lambda d: d[4], reverse=True)
@@ -427,7 +452,11 @@ def deduplicate_detections(detections: list[tuple], iou_threshold: float = 0.45)
     for det in dets:
         suppressed = False
         for kept in keep:
-            if det[5] == kept[5] and IOUTracker._iou(det[:4], kept[:4]) > iou_threshold:
+            same_group = (
+                det[5] == kept[5]
+                or (equiv_classes is not None and det[5] in equiv_classes and kept[5] in equiv_classes)
+            )
+            if same_group and IOUTracker._iou(det[:4], kept[:4]) > iou_threshold:
                 suppressed = True
                 break
         if not suppressed:
@@ -696,10 +725,12 @@ def run(args: argparse.Namespace) -> None:
     multiline_mode = bool(args.config)
     if multiline_mode:
         config = load_config(args.config)
-        ml_counter = MultiLineVehicleCounter(config["lines"], buffer_px=args.buffer)
+        ml_counter = MultiLineVehicleCounter(
+            config["lines"], buffer_px=args.buffer, min_hits=args.min_hits,
+        )
         line_names = [l["name"] for l in config["lines"]]
-        log.info("Loaded %d counting line(s): %s (buffer=%dpx)",
-                 len(config["lines"]), ", ".join(line_names), args.buffer)
+        log.info("Loaded %d counting line(s): %s (buffer=%dpx, min_hits=%d)",
+                 len(config["lines"]), ", ".join(line_names), args.buffer, args.min_hits)
     else:
         config = None
         legacy_counter = VehicleCounter(
@@ -765,14 +796,19 @@ def run(args: argparse.Namespace) -> None:
                 else:
                     vehicle_dets = [d for d in detections if d[5] in VEHICLE_CLASS_IDS]
 
-                if args.deduplicate:
-                    vehicle_dets = deduplicate_detections(vehicle_dets, iou_threshold=args.iou)
+                # Dedup: within same class always; in vehicle mode, also collapse
+                # cross-class vehicle overlaps (car + truck on same box = one object)
+                equiv = None if args.all_classes else VEHICLE_CLASS_IDS
+                if not args.no_deduplicate:
+                    vehicle_dets = deduplicate_detections(
+                        vehicle_dets, iou_threshold=args.iou, equiv_classes=equiv,
+                    )
 
                 tracked = tracker.update(vehicle_dets)
 
                 if multiline_mode:
                     h, w = frame.shape[:2]
-                    crossings = ml_counter.update(tracked, w, h)
+                    crossings = ml_counter.update(tracked, w, h, tracker=tracker)
                     for tid, line_name, direction in crossings:
                         log.info("Vehicle #%d crossed '%s' (%s)", tid, line_name, direction)
                         recently_crossed[tid] = line_name
@@ -888,8 +924,11 @@ def main() -> None:
     parser.add_argument("--iou", type=float, default=0.45, help="NMS IoU threshold")
     parser.add_argument("--all-classes", action="store_true",
                         help="Track all objects, not just vehicles")
+    parser.add_argument("--no-deduplicate", action="store_true",
+                        help="Disable overlap dedup (by default: suppress overlapping same-class and "
+                             "cross-vehicle-class detections)")
     parser.add_argument("--deduplicate", action="store_true",
-                        help="Remove overlapping detections before tracking")
+                        help=argparse.SUPPRESS)  # legacy no-op, kept for backward compat
 
     # Legacy single-line horizontal mode
     parser.add_argument("--line-y", type=float, default=0.5,
@@ -909,6 +948,10 @@ def main() -> None:
                         help="Minimum IoU to match detection to track (default: 0.15)")
     parser.add_argument("--max-distance", type=float, default=200.0,
                         help="Max centroid distance fallback (default: 200)")
+    parser.add_argument("--min-hits", type=int, default=3,
+                        help="Minimum number of frames a track must be seen before "
+                             "its line crossings are counted (default: 3). Prevents "
+                             "ghost/flickering detections from inflating counts.")
 
     input_group = parser.add_mutually_exclusive_group()
     input_group.add_argument("--input-small", action="store_const", dest="input_size", const=(640, 480))

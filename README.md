@@ -170,8 +170,9 @@ By default only vehicles (car, motorcycle, bus, truck) are tracked. Use `--all-c
 | `--direction` | `down` | Count direction: `down`, `up`, or `both` |
 | `--max-disappeared` | `50` | Frames before a lost track is removed |
 | `--min-iou` | `0.15` | Minimum IoU overlap to match detection to track |
+| `--min-hits` | `3` | Frames a track must be seen before its crossings count — prevents ghost detections from inflating counts |
 | `--all-classes` | off | Track all detected objects, not just vehicles |
-| `--deduplicate` | off | Remove overlapping detections before tracking |
+| `--no-deduplicate` | off | Disable overlap dedup (on by default: suppresses same-class overlaps and cross-vehicle-class overlaps like "car + truck" on one box) |
 
 All camera/display/model flags from `run_yolo11.py` are supported (`--display-large`, `--input-large`, `--source`, `--model`, `--confidence`, etc.).
 
