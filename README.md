@@ -245,7 +245,7 @@ python run_yolo11_tracking.py --config line_config.json --display --record --rec
 | Flag | Default | Description |
 |---|---|---|
 | `--record [PATH]` | off | Record annotated frames to MP4. Path optional — auto-timestamped if omitted. |
-| `--record-fps` | `20` | Frame rate written to the file |
+| `--record-fps` | `30` | Frame rate written to the file (matches RPi5 + Hailo real-time throughput) |
 
 The recording is at the full capture resolution (`--input` / `--input-large`), not the resized `--display` size, so detail isn't lost. Stop with `q` in the preview window or `Ctrl+C` — the file is finalized on exit.
 

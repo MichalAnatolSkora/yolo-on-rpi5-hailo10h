@@ -922,8 +922,8 @@ def main() -> None:
 
     parser.add_argument("--record", nargs="?", const="", default=None, metavar="PATH",
                         help="Record annotated preview to video file (default: recording_<timestamp>.mp4)")
-    parser.add_argument("--record-fps", type=float, default=20.0,
-                        help="Recording frame rate (default: 20)")
+    parser.add_argument("--record-fps", type=float, default=30.0,
+                        help="Recording frame rate (default: 30, matches RPi5+Hailo real-time)")
 
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
