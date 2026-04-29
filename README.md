@@ -4,24 +4,29 @@
 
 One-click setup for running YOLO object detection on Raspberry Pi 5 with the Hailo-10H AI accelerator. Also runs locally on macOS / Linux / Windows laptops for development and testing.
 
-## Vehicle Tracking Flow — Quick Start
+## Quick Start: Vehicle Counting
+
+The primary workflow — count vehicles crossing a line you draw on the camera image.
 
 1. **Set up counting lines** — draw trip-wire lines interactively on a frame from your camera. Saves to `line_config.json`:
    ```bash
    python run_yolo11_tracking.py --setup --source 0
    ```
-   Click two points per line, press **Enter** to save, **q** to quit. See [Multi-Line Counting with Interactive Setup](#multi-line-counting-with-interactive-setup).
+   Click two points per line, press **Enter** to save, **q** to quit. See [Multi-line counting with interactive setup](#multi-line-counting-with-interactive-setup).
 
 2. **Start counting + recording** — config is auto-loaded from `./line_config.json`. Adds an MP4 recording of the annotated preview:
    ```bash
    python run_yolo11_tracking.py --source 0 --display --record traffic.mp4
    ```
-   Press **q** in the preview window to stop. See [Recording the Preview to Video](#recording-the-preview-to-video).
+   Press **q** in the preview window to stop. See [Recording the preview to video](#recording-the-preview-to-video).
 
-3. **(optional) Build a ground-truth dataset** — record raw clips, manually count vehicles, then evaluate the tracker offline against the count:
+3. **(optional) Build a ground-truth dataset** — record raw clips (or download from YouTube), manually count vehicles, then evaluate the tracker offline against the count:
    ```bash
-   # Step 1: capture clean clip (no overlays)
+   # Step 1a: capture a clean clip from your camera (no overlays)
    python evaluation/record_raw.py --display --duration 60 --output raw_morning.mp4
+
+   # Step 1b (alternative): download a clip from a YouTube traffic livestream
+   python evaluation/download_clip.py "https://www.youtube.com/watch?v=..." --duration 120
 
    # Step 2: manually count vehicles per counting line, write expected.json
    echo '{"line_1": 12}' > expected.json
@@ -29,37 +34,18 @@ One-click setup for running YOLO object detection on Raspberry Pi 5 with the Hai
    # Step 3: re-run the tracker on the file and compare
    python evaluation/evaluate.py raw_morning.mp4 --expected expected.json --tolerance 1
    ```
-   See [Ground-Truth Recording](#ground-truth-recording-evaluationrecord_rawpy) and [Offline Tracker Evaluation](#offline-tracker-evaluation-evaluationevaluatepy).
+   See [Evaluation & testing](#evaluation--testing).
 
 On Raspberry Pi use `--source picam` (libcamera) or `--source /dev/video0` (USB). On macOS/Linux laptops add `--model yolo11n.pt` (local Ultralytics). Full options below.
 
-## Run Locally on MacBook / Laptop
+**This repo also includes:** [object detection](#object-detection) without tracking, [security camera person line-crossing alerts](#security-camera-person-line-crossing-alert), and an experimental [gesture recognition](#gesture-recognition-wip) pipeline.
 
-No Hailo hardware needed. Uses Ultralytics with CPU or Apple Silicon MPS acceleration.
+## Installation
 
-```bash
-# Install dependencies
-pip install opencv-python ultralytics numpy
+### Raspberry Pi 5 + Hailo-10H
 
-# Object detection (uses built-in webcam)
-python run_yolo11.py --model yolo11n.pt --source 0 --display
+**Hardware Requirements**
 
-# Vehicle tracking
-python run_yolo11_tracking.py --model yolo11n.pt --source 0 --display --all-classes
-```
-
-Ultralytics auto-downloads `yolo11n.pt` on first run. Use `--source 0` for the default webcam (or `1`, `2` for other cameras). On Apple Silicon Macs, MPS acceleration is used automatically when available.
-
-The backend is selected by model file extension:
-| Extension | Backend | Where it runs |
-|---|---|---|
-| `.pt` | Ultralytics | CPU / MPS / CUDA (any platform) |
-| `.onnx` | Ultralytics | CPU / MPS / CUDA (any platform) |
-| `.hef` | HailoRT | Hailo-10H NPU (Raspberry Pi) |
-
-## Raspberry Pi 5 + Hailo-10H Setup
-
-### Hardware Requirements
 | Component | Notes |
 |---|---|
 | **Raspberry Pi 5** | 4GB or 8GB RAM recommended |
@@ -68,7 +54,7 @@ The backend is selected by model file extension:
 | **Thermal Pad** | Transfers heat from Hailo-10H to the expansion board |
 | **Raspberry Pi Camera** *(optional)* | For real-time inference demos |
 
-### Quick Start
+**Install:**
 
 ```bash
 git clone https://github.com/MichalAnatolSkora/yolo-on-rpi5-hailo10h.git
@@ -77,24 +63,48 @@ cd yolo-on-rpi5-hailo10h
 sudo reboot
 ```
 
-That's it. The script auto-detects your hardware (Hailo-10H or Hailo-8), installs the correct driver package, enables PCIe Gen 3, and blacklists conflicting drivers if needed.
+The script auto-detects your hardware (Hailo-10H or Hailo-8), installs the correct driver package, enables PCIe Gen 3, and blacklists conflicting drivers if needed.
 
-## Verifying the Installation
-
-After rebooting, check that the Hailo-10H NPU is recognized by the system:
+**Verify:**
 
 ```bash
 hailortcli fw-control identify
 ```
-You should see output similar to "Identifying board...", followed by details about the Hailo-10 structure and firmware version.
+You should see "Identifying board..." followed by Hailo-10 structure and firmware version.
 
-You can also verify that PCIe Gen 3 is active:
+PCIe Gen 3 check (look for `Speed 8GT/s` — Gen 2 would show `5GT/s`):
 ```bash
 sudo lspci -vv | grep -i hailo -A 20 | grep -i speed
 ```
-Look for `Speed 8GT/s` which indicates Gen 3 is active (Gen 2 would show `5GT/s`).
 
-## YOLO Object Detection
+Then install YOLO models — see [YOLO models](#yolo-models).
+
+### Local development (macOS / Linux / Windows)
+
+No Hailo hardware needed. Uses Ultralytics with CPU or Apple Silicon MPS acceleration.
+
+```bash
+pip install opencv-python ultralytics numpy
+```
+
+Sanity test (built-in webcam):
+```bash
+python run_yolo11.py --model yolo11n.pt --source 0 --display
+```
+
+Ultralytics auto-downloads `yolo11n.pt` on first run. On Apple Silicon Macs, MPS acceleration is used automatically.
+
+## YOLO Models
+
+The backend is selected by model file extension:
+
+| Extension | Backend | Where it runs |
+|---|---|---|
+| `.pt` | Ultralytics | CPU / MPS / CUDA (any platform) |
+| `.onnx` | Ultralytics | CPU / MPS / CUDA (any platform) |
+| `.hef` | HailoRT | Hailo-10H NPU (Raspberry Pi) |
+
+### Installing YOLOv11 on Raspberry Pi
 
 Four model sizes are available, installed via a single script with a variant argument:
 
@@ -105,27 +115,53 @@ Four model sizes are available, installed via a single script with a variant arg
 | YOLOv11l (large) | `./install_yolo11.sh l` | ~25 MB | High accuracy, slower |
 | YOLOv11x (extra-large) | `./install_yolo11.sh x` | ~46 MB | Highest accuracy, slowest |
 
-Install and run:
-
 ```bash
 # Nano (default — recommended for real-time)
 ./install_yolo11.sh
 python run_yolo11.py --display
 
-# Medium (balanced)
+# Medium / Large / Extra-large — pass the variant
 ./install_yolo11.sh m
 python run_yolo11.py --model ~/hailo_models/yolov11m.hef --display
-
-# Large (high accuracy)
-./install_yolo11.sh l
-python run_yolo11.py --model ~/hailo_models/yolov11l.hef --display
-
-# Extra-large (highest accuracy — may not hit real-time FPS)
-./install_yolo11.sh x
-python run_yolo11.py --model ~/hailo_models/yolov11x.hef --display
 ```
 
 The install script downloads a pre-compiled HEF from Hailo Model Zoo and sets up a Python virtual environment. Idempotent — safe to re-run. All variants share the same venv and dependencies.
+
+### Other pre-compiled HEFs
+
+Pre-compiled HEFs for Hailo-10H from [Hailo Model Zoo](https://github.com/hailo-ai/hailo_model_zoo) (DFC v5.2.0):
+
+> **⚠️ Version Compatibility:** The `.hef` model's compiled version must be compatible with your system's `hailort` package version. The models below require `hailort` **5.2.0**. If you use them on an older version (like 5.1.1), you will get a `HAILO_NOT_IMPLEMENTED` error. See [Why YOLOv11 and not YOLOv12](#why-yolov11-and-not-yolov12) for context.
+
+| Model | Size | Download |
+|---|---|---|
+| YOLOv12n | ~5.5 MB | [yolov12n.hef](https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/yolov12n.hef) |
+| YOLOv11n | ~4.9 MB | [yolov11n.hef](https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/yolov11n.hef) |
+| YOLOv8n | ~6.7 MB | [yolov8n.hef](https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/yolov8n.hef) |
+| YOLOv8s | ~13.1 MB | [yolov8s.hef](https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/yolov8s.hef) |
+| YOLOv8m | — | [yolov8m.hef](https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/yolov8m.hef) |
+
+**Hailo-8 models will NOT work on Hailo-10H.** Use only `hailo10h`-compiled HEFs. Place files in `~/hailo_models/`.
+
+GStreamer pipeline (for YOLOv8 with Hailo post-process plugins):
+```bash
+python run_yolo.py --model ~/hailo_models/yolov8n.hef
+```
+
+## Object Detection
+
+Plain object detection — bounding boxes + class labels, no tracking. Script: `run_yolo11.py`.
+
+```bash
+# Default: webcam, headless
+python run_yolo11.py --display
+
+# Local mode (.pt model, any platform)
+python run_yolo11.py --model yolo11n.pt --source 0 --display
+
+# Specific camera + higher resolution
+python run_yolo11.py --display --source /dev/video0 --input-large
+```
 
 **Camera input resolution:**
 
@@ -149,49 +185,30 @@ Without any display flag the script runs headless (no preview window).
 
 **Other options:**
 ```bash
-python run_yolo11.py --display --source /dev/video0              # USB camera (Linux)
 python run_yolo11.py --display --source 0                        # webcam by index (macOS / Linux)
 python run_yolo11.py --input-large --display-large               # high-res capture + preview
 python run_yolo11.py --display --confidence 0.4                  # lower threshold
-python run_yolo11.py --model yolo11n.pt --source 0 --display     # local mode (.pt model)
 ```
 
 To find your USB camera device path on Linux: `ls /dev/video*` or `v4l2-ctl --list-devices`.
 
 ## Vehicle Tracking & Counting
 
-Track and count vehicles (cars, motorcycles, buses, trucks) crossing a configurable line using YOLO detection + IoU-based tracking. Works on both Hailo NPU and locally.
+Track and count vehicles (cars, motorcycles, buses, trucks) crossing a configurable line using YOLO detection + IoU-based tracking. Script: `run_yolo11_tracking.py`. Works on both Hailo NPU and locally.
 
 ```bash
-# Raspberry Pi + Hailo
-python run_yolo11_tracking.py --display                      # count vehicles going down, line at 50%
-python run_yolo11_tracking.py --display --line-y 0.6         # line at 60% of frame height
-python run_yolo11_tracking.py --display --direction both     # count both directions
+# Raspberry Pi + Hailo (single horizontal line at 50%)
+python run_yolo11_tracking.py --display
 
-# MacBook / laptop
+# MacBook / laptop, all classes (handy for testing indoors)
 python run_yolo11_tracking.py --model yolo11n.pt --source 0 --display --all-classes
 ```
 
-By default only vehicles (car, motorcycle, bus, truck) are tracked. Use `--all-classes` to track all COCO objects — handy for testing indoors without vehicles.
-
-**Tracking options:**
-
-| Flag | Default | Description |
-|---|---|---|
-| `--confidence` | `0.3` | Detection threshold (lower = more stable tracking) |
-| `--line-y` | `0.5` | Counting line Y position (0.0 = top, 1.0 = bottom) |
-| `--direction` | `down` | Count direction: `down`, `up`, or `both` |
-| `--max-disappeared` | `50` | Frames before a lost track is removed |
-| `--min-iou` | `0.15` | Minimum IoU overlap to match detection to track |
-| `--min-hits` | `3` | Frames a track must be seen before its crossings count — prevents ghost detections from inflating counts |
-| `--all-classes` | off | Track all detected objects, not just vehicles |
-| `--no-deduplicate` | off | Disable overlap dedup (on by default: suppresses same-class overlaps and cross-vehicle-class overlaps like "car + truck" on one box) |
-
-All camera/display/model flags from `run_yolo11.py` are supported (`--display-large`, `--input-large`, `--source`, `--model`, `--confidence`, etc.).
+By default only vehicles (car, motorcycle, bus, truck) are tracked. Use `--all-classes` to track all COCO objects.
 
 ### Multi-Line Counting with Interactive Setup
 
-In addition to the single horizontal line above, `run_yolo11_tracking.py` supports **arbitrary-angle counting lines**, **multiple lines at once**, and an **interactive setup mode** where you draw lines directly on the camera feed. Each line keeps its own per-direction count.
+The primary mode — supports **arbitrary-angle counting lines**, **multiple lines at once**, and an **interactive setup mode** where you draw lines directly on the camera feed. Each line keeps its own per-direction count.
 
 **1. Draw your lines (setup mode):**
 
@@ -236,24 +253,41 @@ The config file stores lines as normalized coordinates (0.0–1.0), so it works 
 
 Line names and directions (`both`, `positive`, `negative`) can be edited directly in the JSON. The arrow overlay on each line shows the "positive" crossing direction; per-line counts appear next to the line label.
 
-When `--config` is provided (or `./line_config.json` exists in the working directory — it is auto-loaded), the multi-line counter is used instead of the legacy `--line-y` horizontal line. Pass `--no-config` to force legacy mode even if `line_config.json` is present.
+When `--config` is provided (or `./line_config.json` exists in the working directory — it is auto-loaded), the multi-line counter is used instead of the legacy `--line-y` horizontal line.
 
-### Recording the Preview to Video
+### Legacy single horizontal line
+
+When neither `--config` nor `./line_config.json` is present, the tracker falls back to a single horizontal counting line at the Y position you choose:
+
+```bash
+python run_yolo11_tracking.py --display                      # line at 50%, count "down"
+python run_yolo11_tracking.py --display --line-y 0.6         # line at 60% of frame height
+python run_yolo11_tracking.py --display --direction both     # count both directions
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--line-y` | `0.5` | Counting line Y position (0.0 = top, 1.0 = bottom) |
+| `--line-margin` | `40` | Half-height of counting zone in pixels |
+| `--direction` | `down` | Count direction: `down`, `up`, or `both` |
+| `--no-config` | off | Force legacy mode even if `line_config.json` is present |
+
+### Recording the preview to video
 
 Use `--record` to save an MP4 of the annotated preview (with bounding boxes, lines, counts, and labels rendered in). Works in both legacy and multi-line modes, with or without `--display`.
 
 ```bash
 # Auto-named file: recording_YYYYMMDD_HHMMSS.mp4 in the current directory
-python run_yolo11_tracking.py --config line_config.json --display --record
+python run_yolo11_tracking.py --display --record
 
 # Custom output path
-python run_yolo11_tracking.py --config line_config.json --display --record out.mp4
+python run_yolo11_tracking.py --display --record out.mp4
 
 # Headless recording (no preview window)
-python run_yolo11_tracking.py --config line_config.json --record traffic.mp4
+python run_yolo11_tracking.py --record traffic.mp4
 
 # Custom frame rate
-python run_yolo11_tracking.py --config line_config.json --display --record --record-fps 30
+python run_yolo11_tracking.py --display --record --record-fps 30
 ```
 
 | Flag | Default | Description |
@@ -261,11 +295,106 @@ python run_yolo11_tracking.py --config line_config.json --display --record --rec
 | `--record [PATH]` | off | Record annotated frames to MP4. Path optional — auto-timestamped if omitted. |
 | `--record-fps` | `30` | Frame rate written to the file (matches RPi5 + Hailo real-time throughput) |
 
-The recording is at the full capture resolution (`--input` / `--input-large`), not the resized `--display` size, so detail isn't lost. Stop with `q` in the preview window or `Ctrl+C` — the file is finalized on exit.
+The recording is at the full capture resolution (`--input` / `--input-large`), not the resized `--display` size, so detail isn't lost. Stop with `q` in the preview window or `Ctrl+C` — the file is finalized on exit. Codec fallback is `avc1` → `mp4v` → `MJPG/.avi`, so files open in QuickTime / VLC / mpv without re-encoding.
 
-### Ground-Truth Recording (`evaluation/record_raw.py`)
+### Tracker tuning options
 
-When tuning the tracker, the most reliable test is: record a clip, manually count the vehicles, then run the tracker on the recording offline and compare. To do that you need a **clean** recording — raw camera frames, no boxes, no labels, no counters drawn on the image. That's what `evaluation/record_raw.py` produces.
+All camera/display/model flags from `run_yolo11.py` are also supported.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--confidence` | `0.3` | Detection threshold (lower = more stable tracking) |
+| `--iou` | `0.45` | NMS IoU threshold |
+| `--max-disappeared` | `50` | Frames before a lost track is removed |
+| `--min-iou` | `0.15` | Minimum IoU overlap to match detection to track |
+| `--max-distance` | `200` | Max centroid distance fallback (catch fast movers) |
+| `--min-hits` | `3` | Frames a track must be seen before its crossings count — prevents ghost detections from inflating counts |
+| `--all-classes` | off | Track all detected objects, not just vehicles |
+| `--no-deduplicate` | off | Disable overlap dedup (on by default: suppresses same-class overlaps and cross-vehicle-class overlaps like "car + truck" on one box) |
+| `--buffer` | `0` | Buffer zone in pixels around each multi-line trip-wire (0 = exact crossing) |
+
+For tuning these in a reproducible way, use the [evaluation tooling](#evaluation--testing).
+
+## Evaluation & Testing
+
+When tuning the tracker, the most reliable test is: record a clip, manually count the vehicles, then run the tracker on the recording offline and compare. The `evaluation/` folder has three scripts that compose into this workflow:
+
+- [`download_clip.py`](#downloading-test-footage) — grab a clip from YouTube / Twitch / etc. (no camera trip needed)
+- [`record_raw.py`](#recording-ground-truth-clips) — capture clean (no annotation) clips from your own camera
+- [`evaluate.py`](#offline-evaluation) — replay a clip through the tracker, compare to ground truth, exit 0/1 (PASS/FAIL)
+
+The full loop is documented in [End-to-end tuning workflow](#end-to-end-tuning-workflow).
+
+### Downloading test footage
+
+Don't have a camera pointed at a busy street? Grab clips from YouTube traffic livestreams or any other yt-dlp supported source (Twitch, Vimeo, etc.) — same workflow, no recording trip required.
+
+Requires **yt-dlp** + **ffmpeg** installed system-wide:
+
+```bash
+brew install yt-dlp ffmpeg               # macOS
+sudo apt install yt-dlp ffmpeg           # Debian/Ubuntu/RPi
+pip install yt-dlp                       # any platform (still needs ffmpeg)
+```
+
+Examples:
+
+```bash
+# 2 minutes from a YouTube video — auto-named raw_yt_<id>_<timestamp>.mp4
+python evaluation/download_clip.py "https://www.youtube.com/watch?v=VIDEO_ID" --duration 120
+
+# Slice 5 minutes from a longer VOD, starting at 10 minutes in
+python evaluation/download_clip.py "URL" --start 600 --duration 300
+
+# Live stream — record 60s from "now" (skip backlog)
+python evaluation/download_clip.py "URL" --live --duration 60
+
+# Live stream — start from the very beginning of the broadcast
+python evaluation/download_clip.py "URL" --live-from-start --duration 120
+
+# Custom output path
+python evaluation/download_clip.py "URL" --duration 120 --output raw_intersection.mp4
+
+# Lower quality for faster downloads / smaller files (default 720p)
+python evaluation/download_clip.py "URL" --duration 120 --height 480
+
+# Inspect available formats without downloading
+python evaluation/download_clip.py "URL" --list-formats
+
+# Batch — one URL per line in urls.txt; same duration applied to each
+python evaluation/download_clip.py --batch urls.txt --duration 120
+```
+
+`urls.txt` format:
+```
+# Morning rush — Times Square live cam
+https://www.youtube.com/watch?v=...
+# Tokyo Shibuya
+https://www.youtube.com/watch?v=...
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `url` (positional) | (required unless `--batch`) | Source URL — anything yt-dlp supports |
+| `--batch FILE` | none | Process a list of URLs (one per line, `#` comments) |
+| `--output` / `-o` | auto: `raw_yt_<id>_<timestamp>.mp4` | Output path (single-URL mode) |
+| `--duration` | full | Clip length in seconds |
+| `--start` | `0` | Offset for VODs |
+| `--live` | off | Treat URL as live stream (record from now) |
+| `--live-from-start` | off | Live stream from beginning of broadcast |
+| `--height` | `720` | Max resolution — higher = bigger files & slower inference |
+| `--list-formats` | off | Show available qualities/codecs and exit |
+
+**Where to look for traffic footage:**
+- YouTube — search `"traffic camera live"`, `"intersection live cam"`, `"highway camera"` — channels like *Earth Cam*, *VirtualRailfan*, *Skylinewebcams* run 24/7 streams of busy intersections
+- Pexels / Pixabay — free stock clips (CC0 license usually): https://www.pexels.com/search/videos/traffic/
+- Academic datasets for serious benchmarking: **UA-DETRAC** (~100h Chinese traffic), **AI City Challenge**, **MIO-TCD**
+
+**Legal note:** check each site's Terms of Service. Personal/research use of public livestreams is generally accepted; commercial redistribution usually isn't. Academic datasets and CC0 stock clips are explicitly free to use.
+
+### Recording ground-truth clips
+
+When you want a recording of your own camera (no detection, no overlays), use `record_raw.py`. The output is the truth — what the camera saw — without any annotation contaminating the frames.
 
 ```bash
 # Quick recording, stop with Ctrl+C
@@ -289,9 +418,9 @@ Output filename defaults to `raw_YYYYMMDD_HHMMSS.mp4` so it's obvious there's no
 | `--input-small` / `--input` / `--input-large` / `--input-fhd` | `--input-small` | Capture resolution (640×480 / 1024×768 / 1280×720 / 1920×1080) |
 | `--display-small` / `--display` / `--display-large` | off | Show preview window while recording |
 
-Same safe-shutdown behaviour as the tracking script: `q` in preview, window-X close, `Ctrl+C`, `kill`, terminal-close (SIGHUP) — all flush and finalize the MP4 cleanly. Codec fallback is `avc1` → `mp4v` → `MJPG/.avi`, so files open in QuickTime / VLC / mpv without re-encoding.
+Same safe-shutdown behaviour as the tracking script: `q` in preview, window-X close, `Ctrl+C`, `kill`, terminal-close (SIGHUP) — all flush and finalize the MP4 cleanly.
 
-### Offline Tracker Evaluation (`evaluation/evaluate.py`)
+### Offline evaluation
 
 Once you have a raw recording and a manually counted ground-truth number, run the tracker on the file (no camera, no real-time pressure) and compare. Useful for tuning `--min-hits`, `--min-iou`, `--buffer`, and as a regression check after any algorithm change.
 
@@ -338,11 +467,11 @@ Each frame in the file is read sequentially (no frame dropping like with a live 
 | `--model` | platform default | Same semantics as the tracking script |
 | `--min-hits` / `--min-iou` / `--buffer` / etc. | same as tracker | Tuning knobs — pass them through to compare against the same algorithm settings used live |
 
-The `evaluation/` folder bundles the ground-truth tooling: `record_raw.py` for capture and `evaluate.py` for offline analysis. Add a JSON file with expected counts next to each recording, commit both, and you have a reproducible regression suite.
+Add a JSON file with expected counts next to each recording, commit both, and you have a reproducible regression suite.
 
-### End-to-End Tuning Workflow
+### End-to-end tuning workflow
 
-The two scripts compose into a tight tune-and-test loop. The idea: instead of guessing whether a parameter change helps or hurts on a live camera (where you can't reproduce the exact same traffic twice), bake the traffic into a file and replay it against different tracker settings.
+The three scripts compose into a tight tune-and-test loop. Instead of guessing whether a parameter change helps or hurts on a live camera (where you can't reproduce the exact same traffic twice), bake the traffic into a file and replay it against different tracker settings.
 
 **Step 1 — Capture a representative clip.** Record long enough to cover the cases you care about (rush hour, occlusions, fast vehicles, near-misses). Higher resolution is better here because you only do it once:
 
@@ -526,28 +655,9 @@ gestures:
     hold_time: 0.8
 ```
 
-## Other Models
+## Reference
 
-Pre-compiled HEFs for Hailo-10H from [Hailo Model Zoo](https://github.com/hailo-ai/hailo_model_zoo) (DFC v5.2.0):
-
-> **⚠️ Version Compatibility:** The `.hef` model's compiled version must be compatible with your system's `hailort` package version. The models below require `hailort` **5.2.0**. If you use them on an older version (like 5.1.1), you will get a `HAILO_NOT_IMPLEMENTED` error.
-
-| Model | Size | Download |
-|---|---|---|
-| YOLOv12n | ~5.5 MB | [yolov12n.hef](https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/yolov12n.hef) |
-| YOLOv11n | ~4.9 MB | [yolov11n.hef](https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/yolov11n.hef) |
-| YOLOv8n | ~6.7 MB | [yolov8n.hef](https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/yolov8n.hef) |
-| YOLOv8s | ~13.1 MB | [yolov8s.hef](https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/yolov8s.hef) |
-| YOLOv8m | — | [yolov8m.hef](https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/yolov8m.hef) |
-
-**Hailo-8 models will NOT work on Hailo-10H.** Use only `hailo10h`-compiled HEFs. Place files in `~/hailo_models/`.
-
-GStreamer pipeline (for YOLOv8 with Hailo post-process plugins):
-```bash
-python run_yolo.py --model ~/hailo_models/yolov8n.hef
-```
-
-## Why YOLOv11 and not YOLOv12?
+### Why YOLOv11 and not YOLOv12?
 
 This repo uses **YOLOv11n** instead of the newer YOLOv12n. Here's why:
 
@@ -561,7 +671,7 @@ On top of the version mismatch, YOLOv12 itself uses an attention-based architect
 
 **TL;DR:** The Raspberry Pi `hailo-h10-all` package is at version 5.1.1, and YOLOv12 HEFs need 5.2.0. Use YOLOv11n until Raspberry Pi ships an updated HailoRT package. Switching will be a one-line model path change.
 
-## Troubleshooting
+### Troubleshooting
 
 Run the diagnostic script to identify issues:
 ```bash
@@ -577,4 +687,6 @@ It checks PCIe detection, kernel driver, firmware, device availability, Python b
 | GStreamer pipeline fails to open | Check camera connection with `rpicam-hello` first; ensure Hailo GStreamer plugins are installed |
 | `.hef` model errors | Confirm the model was compiled for `hailo10h` arch — Hailo-8 models are **not** compatible |
 | `HAILO_NOT_IMPLEMENTED` error | The `.hef` model requires a newer `hailort` version (e.g., model needs 5.2.0, system has 5.1.1). Update `hailort` (`sudo apt update && sudo apt install h10-hailort`) or recompile the model. |
+| Camera not authorized on macOS | *System Settings → Privacy & Security → Camera* → enable Terminal/iTerm/VS Code, then restart the terminal |
+| Recording file won't open in QuickTime | The `mp4v` codec was used as fallback. Open in VLC instead, or re-encode with `ffmpeg -i in.mp4 -c:v libx264 out.mp4` |
 | Poor thermal performance | Ensure active cooler is connected and thermal pad contacts the Hailo module |
