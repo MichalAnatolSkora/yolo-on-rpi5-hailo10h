@@ -18,6 +18,19 @@ One-click setup for running YOLO object detection on Raspberry Pi 5 with the Hai
    ```
    Press **q** in the preview window to stop. See [Recording the Preview to Video](#recording-the-preview-to-video).
 
+3. **(optional) Build a ground-truth dataset** — record raw clips, manually count vehicles, then evaluate the tracker offline against the count:
+   ```bash
+   # Step 1: capture clean clip (no overlays)
+   python evaluation/record_raw.py --display --duration 60 --output raw_morning.mp4
+
+   # Step 2: manually count vehicles per counting line, write expected.json
+   echo '{"line_1": 12}' > expected.json
+
+   # Step 3: re-run the tracker on the file and compare
+   python evaluation/evaluate.py raw_morning.mp4 --expected expected.json --tolerance 1
+   ```
+   See [Ground-Truth Recording](#ground-truth-recording-evaluationrecord_rawpy) and [Offline Tracker Evaluation](#offline-tracker-evaluation-evaluationevaluatepy).
+
 On Raspberry Pi use `--source picam` (libcamera) or `--source /dev/video0` (USB). On macOS/Linux laptops add `--model yolo11n.pt` (local Ultralytics). Full options below.
 
 ## Run Locally on MacBook / Laptop
@@ -249,6 +262,149 @@ python run_yolo11_tracking.py --config line_config.json --display --record --rec
 | `--record-fps` | `30` | Frame rate written to the file (matches RPi5 + Hailo real-time throughput) |
 
 The recording is at the full capture resolution (`--input` / `--input-large`), not the resized `--display` size, so detail isn't lost. Stop with `q` in the preview window or `Ctrl+C` — the file is finalized on exit.
+
+### Ground-Truth Recording (`evaluation/record_raw.py`)
+
+When tuning the tracker, the most reliable test is: record a clip, manually count the vehicles, then run the tracker on the recording offline and compare. To do that you need a **clean** recording — raw camera frames, no boxes, no labels, no counters drawn on the image. That's what `evaluation/record_raw.py` produces.
+
+```bash
+# Quick recording, stop with Ctrl+C
+python evaluation/record_raw.py
+
+# Live preview + auto-stop after 60s
+python evaluation/record_raw.py --display --duration 60
+
+# Native Full HD on Raspberry Pi camera, 2 minutes
+python evaluation/record_raw.py --source picam --input-fhd --duration 120 --output street_morning.mp4
+```
+
+Output filename defaults to `raw_YYYYMMDD_HHMMSS.mp4` so it's obvious there's no annotation in the file.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--source` | platform default | Camera source — same semantics as the tracking script (`0`, `/dev/video0`, `picam`) |
+| `--output` / `-o` | `raw_<timestamp>.mp4` | Output file path |
+| `--duration` | none | Auto-stop after N seconds (otherwise runs until `q` / `Ctrl+C`) |
+| `--fps` | `30` | Frame rate written to the file |
+| `--input-small` / `--input` / `--input-large` / `--input-fhd` | `--input-small` | Capture resolution (640×480 / 1024×768 / 1280×720 / 1920×1080) |
+| `--display-small` / `--display` / `--display-large` | off | Show preview window while recording |
+
+Same safe-shutdown behaviour as the tracking script: `q` in preview, window-X close, `Ctrl+C`, `kill`, terminal-close (SIGHUP) — all flush and finalize the MP4 cleanly. Codec fallback is `avc1` → `mp4v` → `MJPG/.avi`, so files open in QuickTime / VLC / mpv without re-encoding.
+
+### Offline Tracker Evaluation (`evaluation/evaluate.py`)
+
+Once you have a raw recording and a manually counted ground-truth number, run the tracker on the file (no camera, no real-time pressure) and compare. Useful for tuning `--min-hits`, `--min-iou`, `--buffer`, and as a regression check after any algorithm change.
+
+```bash
+# Total expected = 12 (across all lines), exact match required
+python evaluation/evaluate.py raw_morning.mp4 --expected 12
+
+# Allow off-by-1 tolerance
+python evaluation/evaluate.py raw_morning.mp4 --expected 12 --tolerance 1
+
+# Per-line expected, inline form
+python evaluation/evaluate.py raw_morning.mp4 --expected line_1=5,line_2=7
+
+# Per-line expected, from JSON file (handy for committed test fixtures)
+python evaluation/evaluate.py raw_morning.mp4 --expected expected.json
+
+# Visual debugging — write annotated copy and watch live
+python evaluation/evaluate.py raw_morning.mp4 --expected 12 --annotate annotated.mp4 --display
+```
+
+`expected.json` format:
+```json
+{ "line_1": 5, "line_2": 7 }
+```
+
+Output is a per-line table plus a final `RESULT: PASS` / `RESULT: FAIL`. **Exit code is 0 on PASS and 1 on FAIL**, so the script doubles as a CI check:
+
+```bash
+python evaluation/evaluate.py raw_morning.mp4 --expected expected.json --tolerance 1 \
+    && echo "tracker still OK" \
+    || echo "regression!"
+```
+
+Each frame in the file is read sequentially (no frame dropping like with a live camera), so the count is **deterministic** — re-running the same file with the same config and model gives the same result. This is what makes it suitable as a unit-test-like check.
+
+| Flag | Default | Description |
+|---|---|---|
+| `recording` | (required) | Path to recorded video file |
+| `--config` | `line_config.json` | Line config JSON |
+| `--expected` | none | Ground-truth: integer (total), `name=N,...` (per-line), or path to a `.json` file |
+| `--tolerance` | `0` | Allowed `|actual - expected|` per line |
+| `--annotate PATH` | off | Write an annotated copy of the recording for visual debugging |
+| `--display` | off | Show preview window while evaluating (slower) |
+| `--model` | platform default | Same semantics as the tracking script |
+| `--min-hits` / `--min-iou` / `--buffer` / etc. | same as tracker | Tuning knobs — pass them through to compare against the same algorithm settings used live |
+
+The `evaluation/` folder bundles the ground-truth tooling: `record_raw.py` for capture and `evaluate.py` for offline analysis. Add a JSON file with expected counts next to each recording, commit both, and you have a reproducible regression suite.
+
+### End-to-End Tuning Workflow
+
+The two scripts compose into a tight tune-and-test loop. The idea: instead of guessing whether a parameter change helps or hurts on a live camera (where you can't reproduce the exact same traffic twice), bake the traffic into a file and replay it against different tracker settings.
+
+**Step 1 — Capture a representative clip.** Record long enough to cover the cases you care about (rush hour, occlusions, fast vehicles, near-misses). Higher resolution is better here because you only do it once:
+
+```bash
+python evaluation/record_raw.py --source picam --input-fhd --duration 120 --output raw_morning.mp4
+```
+
+**Step 2 — Manually count.** Open the file in any player, count vehicles per line by eye. This is your ground truth — write it down once and reuse forever:
+
+```bash
+cat > expected.json <<EOF
+{ "line_1": 47, "line_2": 12 }
+EOF
+```
+
+Commit both `raw_morning.mp4` (or just the JSON if the file is large — keep raws on a NAS) and `expected.json`. They define the test fixture.
+
+**Step 3 — Baseline.** Run the tracker on the recording with current defaults to see where you stand:
+
+```bash
+$ python evaluation/evaluate.py raw_morning.mp4 --expected expected.json
+  Line                     Actual    Expected    Diff  Status
+  ---------------------- --------  ----------  ------  ------
+  line_1                       52          47      +5    FAIL
+  line_2                       14          12      +2    FAIL
+  TOTAL                        66          59      +7
+RESULT: FAIL — 2 line(s) outside tolerance ±0
+```
+
+**Step 4 — Tune.** The diff column tells you the direction of error:
+
+- **Actual > Expected** = over-counting → ID churn or duplicate detections. Try `--min-hits 5` (require longer track confirmation), `--min-iou 0.10` (more forgiving matching), or check for `--no-deduplicate` accidentally on.
+- **Actual < Expected** = under-counting → tracker losing fast objects. Try `--max-distance 350`, `--max-disappeared 80`, or a higher confidence model (`--model ~/hailo_models/yolov11l.hef`).
+- **One line off, others fine** = line geometry issue. Re-run `--setup` and redraw, or add `--buffer 20` so vehicles within 20px of the line still count.
+
+```bash
+# Try tighter confirmation gate
+$ python evaluation/evaluate.py raw_morning.mp4 --expected expected.json --min-hits 5
+  line_1   →   48 (was 52, target 47)  +1   FAIL
+  line_2   →   12 (was 14, target 12)  +0   OK
+  TOTAL    →   60 (was 66, target 59)  +1
+RESULT: FAIL — 1 line(s) outside tolerance ±0
+
+# Add small tolerance for camera-jitter ambiguity
+$ python evaluation/evaluate.py raw_morning.mp4 --expected expected.json --min-hits 5 --tolerance 1
+RESULT: PASS — all lines within tolerance ±1
+```
+
+**Step 5 — Lock in and watch live.** Once the file passes, use the exact same flags live so what you saw offline is what you get on the camera:
+
+```bash
+python run_yolo11_tracking.py --display --record --min-hits 5
+```
+
+**Step 6 — Regression check after future changes.** Every time you touch the tracker code (or update YOLO weights, or change the model), re-run evaluate against the saved fixture. If the numbers still match, the change didn't break counting:
+
+```bash
+python evaluation/evaluate.py raw_morning.mp4 --expected expected.json --tolerance 1 \
+    || echo "regression — investigate before merging"
+```
+
+Keep multiple fixtures for different scenarios (`raw_morning.mp4`, `raw_rain.mp4`, `raw_night.mp4`) and run them all in CI to catch tuning that helps one case but hurts another.
 
 ## Security Camera: Person Line-Crossing Alert
 
