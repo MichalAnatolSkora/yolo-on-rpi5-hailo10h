@@ -85,6 +85,7 @@ def build_cmd(
     start: float | None,
     height: int,
     live: bool,
+    live_from_start: bool,
     list_formats: bool,
 ) -> list[str]:
     cmd = ["yt-dlp"]
@@ -105,23 +106,31 @@ def build_cmd(
     )
     cmd += ["-f", fmt, "--merge-output-format", "mp4"]
 
-    # Live stream: record from "now" by default (skip backlog), unless user wants from start
     if live:
-        cmd += ["--live-from-start"]
-
-    # Time slicing
-    if duration is not None or start is not None:
-        s = int(start or 0)
+        # Live streams need a different mechanism: --download-sections won't work
+        # because the live manifest doesn't support range requests. We use ffmpeg
+        # as the downloader and stop it with -t after `duration` seconds.
+        if live_from_start:
+            cmd += ["--live-from-start"]
         if duration is not None:
-            e = s + int(duration)
-            section = f"*{s}-{e}"
-        else:
-            section = f"*{s}-"
-        cmd += ["--download-sections", section]
-        # force_keyframes guarantees the section starts on a keyframe so the
-        # MP4 actually plays from the requested point (without it, the first
-        # second can be black/glitchy).
-        cmd += ["--force-keyframes-at-cuts"]
+            cmd += [
+                "--downloader", "ffmpeg",
+                "--downloader-args", f"ffmpeg:-t {int(duration)}",
+            ]
+    else:
+        # VOD: --download-sections works for partial downloads
+        if duration is not None or start is not None:
+            s = int(start or 0)
+            if duration is not None:
+                e = s + int(duration)
+                section = f"*{s}-{e}"
+            else:
+                section = f"*{s}-"
+            cmd += ["--download-sections", section]
+            # force_keyframes guarantees the section starts on a keyframe so the
+            # MP4 actually plays from the requested point (without it, the first
+            # second can be black/glitchy).
+            cmd += ["--force-keyframes-at-cuts"]
 
     # Output template
     cmd += ["-o", output]
@@ -148,6 +157,7 @@ def download_one(args: argparse.Namespace, url: str, output: str | None = None) 
         start=args.start,
         height=args.height,
         live=args.live,
+        live_from_start=args.live_from_start,
         list_formats=args.list_formats,
     )
 

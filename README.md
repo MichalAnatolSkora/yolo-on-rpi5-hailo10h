@@ -385,9 +385,55 @@ https://www.youtube.com/watch?v=...
 | `--height` | `720` | Max resolution — higher = bigger files & slower inference |
 | `--list-formats` | off | Show available qualities/codecs and exit |
 
-**Where to look for traffic footage:**
-- YouTube — search `"traffic camera live"`, `"intersection live cam"`, `"highway camera"` — channels like *Earth Cam*, *VirtualRailfan*, *Skylinewebcams* run 24/7 streams of busy intersections
+**Verified-working YouTube live streams** (all tested April 2026 with `yt-dlp --print is_live` — URLs may rotate over time, re-search if any goes offline):
+
+*Best for highway counting* (multi-lane, clean traffic flow, no pedestrian noise):
+
+| Stream | URL | Notes |
+|---|---|---|
+| **I-70 Eisenhower Tunnel** (CO, USA) | `https://www.youtube.com/watch?v=ckvtwmD7tq8` | 2 lanes each way, mountain interstate, clean separation — ideal for directional counts |
+| **I-25 Monument Hill** (CO, USA) | `https://www.youtube.com/watch?v=T2_fTYxVBx8` | 2+2 lanes interstate, north/southbound view, classic divided highway |
+| **SF–Oakland Bay Bridge** (CA, USA) | `https://www.youtube.com/watch?v=CXYr04BWvmc` | High-traffic highway 24/7 (ABC7 News), side-on view |
+
+*Best for intersection counting* (clear roads, traffic crosses the frame):
+
+| Stream | URL | Notes |
+|---|---|---|
+| **Jackson Hole Town Square**, WY | `https://www.youtube.com/watch?v=1EiC9bvVGnk` | 4-way intersection, day/night cycle, moderate traffic |
+| **Scottsville Main Street**, KY | `https://www.youtube.com/watch?v=MsiHVaomJ04` | Small-town main street (EarthCam), lighter traffic |
+| **Walworth Road**, London | `https://www.youtube.com/watch?v=8JCk5M_xrBs` | Two-way urban road, straightforward angle |
+
+*Mixed traffic + pedestrians* (also good for testing person tracking):
+
+| Stream | URL | Notes |
+|---|---|---|
+| **Times Square 4K**, NYC | `https://www.youtube.com/watch?v=rnXIjl_Rzy4` | EarthCam 4K — vehicles + heavy foot traffic |
+| **Abbey Road Crossing**, London | `https://www.youtube.com/watch?v=M3EYAY2MftI` | Iconic zebra crossing — cars stop for pedestrians |
+| **Shibuya Scramble**, Tokyo | `https://www.youtube.com/watch?v=dfVK7ld38Ys` | Busiest pedestrian crossing in the world (FNN) |
+| **Dublin, Ireland** | `https://www.youtube.com/watch?v=3nyPER2kzqk` | Street-level European city center (EarthCam) |
+| **New Orleans Street View** | `https://www.youtube.com/watch?v=Ksrleaxxxhw` | French Quarter street life (EarthCam) |
+
+*City panoramas* (lower vehicle resolution, but useful for wide-angle tests):
+
+| Stream | URL | Notes |
+|---|---|---|
+| **Berlin Alexanderplatz** | `https://www.youtube.com/watch?v=IRqboacDNFg` | Panoramic Berlin (Livespotting) |
+| **Destination Deutschland** | `https://www.youtube.com/watch?v=Li3Dvqlo5uE` | Rotating multi-cam across Germany (Feratel) |
+
+**Quick start** with the most ground-truth-friendly one:
+```bash
+python evaluation/download_clip.py "https://www.youtube.com/watch?v=1EiC9bvVGnk" --live --duration 120 --output raw_jackson_hole.mp4
+```
+
+**Verify a URL is still live** before downloading a long clip:
+```bash
+yt-dlp --skip-download --print "live=%(is_live)s | %(title)s" "URL"
+```
+
+**More sources:**
+- YouTube — search `"traffic camera live"`, `"intersection live cam"`, `"highway camera"` (and Polish: `"kamera skrzyżowanie live"`, `"rondo na żywo"`). Channels: *Earth Cam* (`@EarthCam/streams`), *VirtualRailfan*, *Skylinewebcams*, *See Jackson Hole*
 - Pexels / Pixabay — free stock clips (CC0 license usually): https://www.pexels.com/search/videos/traffic/
+- TrafficVision.live — directory of 140k+ traffic cameras worldwide: https://trafficvision.live/
 - Academic datasets for serious benchmarking: **UA-DETRAC** (~100h Chinese traffic), **AI City Challenge**, **MIO-TCD**
 
 **Legal note:** check each site's Terms of Service. Personal/research use of public livestreams is generally accepted; commercial redistribution usually isn't. Academic datasets and CC0 stock clips are explicitly free to use.
