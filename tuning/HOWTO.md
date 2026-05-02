@@ -14,7 +14,7 @@ automated.
 |---|---|---|
 | **A recorded clip** | An `.mp4` of the camera view you want to count | `python evaluation/record_raw.py --duration 60` or `python evaluation/download_clip.py <url> --duration 120` |
 | **Ground truth** | Number of vehicles you (a human) counted crossing each line | Watch the clip, count by hand. Save as JSON or pass inline. |
-| **Line config** | Where the counting lines are drawn on the frame | `python run_yolo11_tracking.py --setup --source 0` → creates `line_config.json` |
+| **Line config** | Where the counting lines are drawn on the frame | `python run_yolo11_tracking.py --setup --source 0` (live camera) or `--source raw_morning.mp4 [--frame N]` (from the same clip you tune on) → creates `line_config.json` |
 | **Tracker config** | The 8 tunable knobs | [`tracker_config.json`](../tracker_config.json) at repo root (already there with defaults) |
 
 The ground-truth file format (`expected.json`) matches what `evaluate.py` expects:

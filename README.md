@@ -213,6 +213,12 @@ python run_yolo11_tracking.py --setup --source 0
 
 # Custom config file path
 python run_yolo11_tracking.py --setup --source 0 --config my_lines.json
+
+# From a recorded video file (uses the middle frame by default)
+python run_yolo11_tracking.py --setup --source raw_morning.mp4
+
+# Pick a specific frame from the video (handy if the middle frame is empty)
+python run_yolo11_tracking.py --setup --source raw_morning.mp4 --frame 200
 ```
 
 In setup mode:

@@ -601,6 +601,47 @@ def draw_tracking_multiline(
 # Interactive setup mode
 # ---------------------------------------------------------------------------
 
+def _grab_setup_frame(args: argparse.Namespace):
+    """Grab one frame for the line-setup overlay.
+
+    If ``args.source`` is an existing file (a recorded clip), open it with
+    cv2.VideoCapture and seek to ``args.frame`` (default: middle frame).
+    Otherwise treat it as a camera and warm up by reading a few frames.
+    """
+    if os.path.isfile(args.source):
+        cap = cv2.VideoCapture(args.source)
+        if not cap.isOpened():
+            log.error("Could not open video file: %s", args.source)
+            sys.exit(1)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        target = args.frame if args.frame is not None else max(0, total // 2)
+        if total and target >= total:
+            log.warning("--frame %d >= total frames %d, using last frame", target, total)
+            target = total - 1
+        cap.set(cv2.CAP_PROP_POS_FRAMES, target)
+        ret, frame = cap.read()
+        cap.release()
+        if not ret or frame is None:
+            log.error("Could not read frame %d from %s", target, args.source)
+            sys.exit(1)
+        log.info("Setup frame: %s [frame %d of %d]", args.source, target, total)
+        return frame
+
+    cap_w, cap_h = args.input_size
+    cap = open_camera(args.source, cap_w, cap_h)
+    if not cap.isOpened():
+        log.error("Could not open camera: %s", args.source)
+        sys.exit(1)
+    ret, frame = False, None
+    for _ in range(10):
+        ret, frame = cap.read()
+    cap.release()
+    if not ret or frame is None:
+        log.error("Could not capture a frame from camera.")
+        sys.exit(1)
+    return frame
+
+
 def run_setup(args: argparse.Namespace) -> None:
     config_path = args.config or "line_config.json"
 
@@ -611,20 +652,7 @@ def run_setup(args: argparse.Namespace) -> None:
         config.setdefault("lines", [])
         log.info("Loaded existing config with %d lines from %s", len(config["lines"]), config_path)
 
-    cap_w, cap_h = args.input_size
-    cap = open_camera(args.source, cap_w, cap_h)
-    if not cap.isOpened():
-        log.error("Could not open camera.")
-        sys.exit(1)
-
-    ret, frame = False, None
-    for _ in range(10):
-        ret, frame = cap.read()
-    cap.release()
-
-    if not ret or frame is None:
-        log.error("Could not capture a frame from camera.")
-        sys.exit(1)
+    frame = _grab_setup_frame(args)
 
     base_frame = frame.copy()
     h, w = frame.shape[:2]
@@ -920,7 +948,13 @@ def main() -> None:
     parser.add_argument("--labels", default="", help="Path to class labels file")
     parser.add_argument(
         "--source", default=default_source(),
-        help="Camera source: device index (0, 1), V4L2 path, or 'picam'",
+        help="Source: camera (device index '0'/'1', V4L2 path, 'picam'), "
+             "or — in --setup mode — a path to a recorded video file",
+    )
+    parser.add_argument(
+        "--frame", type=int, default=None,
+        help="--setup only, when --source is a video file: which frame to grab "
+             "for line drawing (default: middle frame)",
     )
     parser.add_argument("--confidence", type=float, default=tcfg["confidence"],
                         help=f"Confidence threshold (config: {tcfg['confidence']})")
