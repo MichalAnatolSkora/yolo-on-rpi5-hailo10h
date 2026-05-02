@@ -143,11 +143,6 @@ Pre-compiled HEFs for Hailo-10H from [Hailo Model Zoo](https://github.com/hailo-
 
 **Hailo-8 models will NOT work on Hailo-10H.** Use only `hailo10h`-compiled HEFs. Place files in `~/hailo_models/`.
 
-GStreamer pipeline (for YOLOv8 with Hailo post-process plugins):
-```bash
-python run_yolo.py --model ~/hailo_models/yolov8n.hef
-```
-
 ## Object Detection
 
 Plain object detection — bounding boxes + class labels, no tracking. Script: `run_yolo11.py`.

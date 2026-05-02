@@ -1,0 +1,11 @@
+{
+  "_comment": "Tunable tracker parameters. Edited by the tune-tracker agent. CLI flags (--confidence, --min-hits, etc) override these values.",
+  "confidence": 0.3,
+  "iou": 0.45,
+  "min_iou": 0.15,
+  "max_distance": 200.0,
+  "max_disappeared": 50,
+  "min_hits": 3,
+  "buffer": 0,
+  "deduplicate": true
+}

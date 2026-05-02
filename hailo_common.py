@@ -8,6 +8,7 @@ Provides camera access, drawing, and two inference backends:
 Use ``create_session(model_path)`` to auto-select based on file extension.
 """
 
+import json
 import logging
 import os
 import platform
@@ -18,6 +19,47 @@ import cv2
 import numpy as np
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Tracker config
+# ---------------------------------------------------------------------------
+
+TRACKER_CONFIG_DEFAULTS = {
+    "confidence": 0.3,
+    "iou": 0.45,
+    "min_iou": 0.15,
+    "max_distance": 200.0,
+    "max_disappeared": 50,
+    "min_hits": 3,
+    "buffer": 0,
+    "deduplicate": True,
+}
+
+
+def load_tracker_config(path: str = "tracker_config.json") -> dict:
+    """Load tunable tracker params from JSON, falling back to defaults.
+
+    Missing file or missing keys → defaults are used. The tune-tracker agent
+    edits this file; CLI flags still override the loaded values.
+    """
+    cfg = dict(TRACKER_CONFIG_DEFAULTS)
+    if not os.path.isfile(path):
+        return cfg
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("Could not parse %s (%s) — using defaults", path, exc)
+        return cfg
+    for k, v in data.items():
+        if k.startswith("_"):
+            continue
+        if k in cfg:
+            cfg[k] = v
+        else:
+            log.warning("Unknown key in %s: %r — ignored", path, k)
+    return cfg
 
 # COCO class names (80 classes)
 COCO_CLASSES = [

@@ -36,7 +36,7 @@ import numpy as np
 
 from hailo_common import (
     ThreadedCamera, create_session, default_model, default_source,
-    load_labels, open_camera,
+    load_labels, load_tracker_config, open_camera,
 )
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
@@ -899,8 +899,11 @@ def main() -> None:
     if hasattr(signal, "SIGHUP"):
         signal.signal(signal.SIGHUP, _signal_handler)
 
+    tcfg = load_tracker_config()
+
     parser = argparse.ArgumentParser(
-        description="Track and count vehicles using YOLO (Hailo NPU or local CPU/MPS)"
+        description="Track and count vehicles using YOLO (Hailo NPU or local CPU/MPS). "
+                    "Tunable defaults are loaded from tracker_config.json; CLI flags override."
     )
 
     parser.add_argument("--setup", action="store_true",
@@ -919,12 +922,13 @@ def main() -> None:
         "--source", default=default_source(),
         help="Camera source: device index (0, 1), V4L2 path, or 'picam'",
     )
-    parser.add_argument("--confidence", type=float, default=0.3,
-                        help="Confidence threshold (default: 0.3)")
-    parser.add_argument("--iou", type=float, default=0.45, help="NMS IoU threshold")
+    parser.add_argument("--confidence", type=float, default=tcfg["confidence"],
+                        help=f"Confidence threshold (config: {tcfg['confidence']})")
+    parser.add_argument("--iou", type=float, default=tcfg["iou"],
+                        help=f"NMS IoU threshold (config: {tcfg['iou']})")
     parser.add_argument("--all-classes", action="store_true",
                         help="Track all objects, not just vehicles")
-    parser.add_argument("--no-deduplicate", action="store_true",
+    parser.add_argument("--no-deduplicate", action="store_true", default=not tcfg["deduplicate"],
                         help="Disable overlap dedup (by default: suppress overlapping same-class and "
                              "cross-vehicle-class detections)")
     parser.add_argument("--deduplicate", action="store_true",
@@ -939,19 +943,18 @@ def main() -> None:
                         help="[legacy] Count direction (default: down)")
 
     # Multi-line mode
-    parser.add_argument("--buffer", type=int, default=0,
-                        help="Buffer zone in pixels around each line (0 = exact crossing)")
+    parser.add_argument("--buffer", type=int, default=tcfg["buffer"],
+                        help=f"Buffer zone in pixels around each line (config: {tcfg['buffer']})")
 
-    parser.add_argument("--max-disappeared", type=int, default=50,
-                        help="Frames before a lost track is removed (default: 50)")
-    parser.add_argument("--min-iou", type=float, default=0.15,
-                        help="Minimum IoU to match detection to track (default: 0.15)")
-    parser.add_argument("--max-distance", type=float, default=200.0,
-                        help="Max centroid distance fallback (default: 200)")
-    parser.add_argument("--min-hits", type=int, default=3,
-                        help="Minimum number of frames a track must be seen before "
-                             "its line crossings are counted (default: 3). Prevents "
-                             "ghost/flickering detections from inflating counts.")
+    parser.add_argument("--max-disappeared", type=int, default=tcfg["max_disappeared"],
+                        help=f"Frames before a lost track is removed (config: {tcfg['max_disappeared']})")
+    parser.add_argument("--min-iou", type=float, default=tcfg["min_iou"],
+                        help=f"Minimum IoU to match detection to track (config: {tcfg['min_iou']})")
+    parser.add_argument("--max-distance", type=float, default=tcfg["max_distance"],
+                        help=f"Max centroid distance fallback (config: {tcfg['max_distance']})")
+    parser.add_argument("--min-hits", type=int, default=tcfg["min_hits"],
+                        help=f"Minimum frames a track must be seen before its crossings count "
+                             f"(config: {tcfg['min_hits']}). Prevents ghost detections inflating counts.")
 
     input_group = parser.add_mutually_exclusive_group()
     input_group.add_argument("--input-small", action="store_const", dest="input_size", const=(640, 480))

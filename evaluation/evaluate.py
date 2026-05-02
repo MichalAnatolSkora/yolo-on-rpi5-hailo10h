@@ -41,7 +41,7 @@ import cv2
 # Allow running as a script from the evaluation/ subfolder
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from hailo_common import create_session, default_model, load_labels
+from hailo_common import create_session, default_model, load_labels, load_tracker_config
 from run_yolo11_tracking import (
     IOUTracker,
     MultiLineVehicleCounter,
@@ -295,6 +295,21 @@ def evaluate(args: argparse.Namespace) -> int:
     for name, actual, exp, diff, status in rows:
         print(f"  {name:<22} {actual:>8}  {exp:>10}  {diff:>6}  {status:>6}")
 
+    if args.json:
+        payload = {
+            "recording": args.recording,
+            "frames_processed": frame_idx,
+            "eval_seconds": round(eval_secs, 2),
+            "actual_per_line": actual_per_line,
+            "actual_total": actual_total,
+            "expected": expected,
+            "tolerance": args.tolerance,
+            "failed_lines": failed_lines,
+        }
+        with open(args.json, "w") as f:
+            json.dump(payload, f, indent=2)
+        log.info("Wrote JSON results to %s", args.json)
+
     print()
     if expected is None:
         print("(no --expected given; pass --expected N or --expected file.json to enable PASS/FAIL)")
@@ -338,21 +353,27 @@ def main() -> None:
     )
     parser.add_argument("--display", action="store_true",
                         help="Show preview window while evaluating (slower)")
+    parser.add_argument("--json", default=None, metavar="PATH",
+                        help="Write results (per-line actual/expected/diff) to JSON file")
+
+    tcfg = load_tracker_config(
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tracker_config.json")
+    )
 
     parser.add_argument("--model", default=default_model(),
                         help="Model path: .hef (Hailo) or .pt / .onnx (Ultralytics)")
     parser.add_argument("--labels", default="")
-    parser.add_argument("--confidence", type=float, default=0.3)
-    parser.add_argument("--iou", type=float, default=0.45)
+    parser.add_argument("--confidence", type=float, default=tcfg["confidence"])
+    parser.add_argument("--iou", type=float, default=tcfg["iou"])
 
     parser.add_argument("--all-classes", action="store_true")
-    parser.add_argument("--no-deduplicate", action="store_true")
+    parser.add_argument("--no-deduplicate", action="store_true", default=not tcfg["deduplicate"])
 
-    parser.add_argument("--buffer", type=int, default=0)
-    parser.add_argument("--max-disappeared", type=int, default=50)
-    parser.add_argument("--min-iou", type=float, default=0.15)
-    parser.add_argument("--max-distance", type=float, default=200.0)
-    parser.add_argument("--min-hits", type=int, default=3)
+    parser.add_argument("--buffer", type=int, default=tcfg["buffer"])
+    parser.add_argument("--max-disappeared", type=int, default=tcfg["max_disappeared"])
+    parser.add_argument("--min-iou", type=float, default=tcfg["min_iou"])
+    parser.add_argument("--max-distance", type=float, default=tcfg["max_distance"])
+    parser.add_argument("--min-hits", type=int, default=tcfg["min_hits"])
 
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
