@@ -70,6 +70,9 @@ def _signal_handler(signum, frame):
 # Config
 # ---------------------------------------------------------------------------
 
+CURRENT_SCHEMA_VERSION = 0  # bump when the line config gains required fields
+
+
 def load_config(path: str) -> dict:
     """Load and validate a line config JSON file."""
     if not os.path.isfile(path):
@@ -77,6 +80,19 @@ def load_config(path: str) -> dict:
         sys.exit(1)
     with open(path) as f:
         config = json.load(f)
+    version = config.get("schema_version")
+    if version is None:
+        log.warning(
+            "%s has no schema_version — treating as legacy (v0). "
+            "Add \"schema_version\": 0 to silence this warning.", path,
+        )
+        version = 0
+    if version > CURRENT_SCHEMA_VERSION:
+        log.error(
+            "%s has schema_version=%d but this script only understands up to v%d. "
+            "Upgrade the script.", path, version, CURRENT_SCHEMA_VERSION,
+        )
+        sys.exit(1)
     lines = config.get("lines", [])
     if not lines:
         log.error("Config has no lines defined. Run --setup first.")
@@ -413,10 +429,11 @@ def run_setup(args: argparse.Namespace) -> None:
     config_path = args.config or "line_config.json"
 
     # Load existing config if present
-    config: dict = {"lines": [], "webhook_url": ""}
+    config: dict = {"schema_version": CURRENT_SCHEMA_VERSION, "lines": [], "webhook_url": ""}
     if os.path.isfile(config_path):
         with open(config_path) as f:
             config = json.load(f)
+        config.setdefault("schema_version", CURRENT_SCHEMA_VERSION)
         log.info("Loaded existing config with %d lines from %s", len(config.get("lines", [])), config_path)
 
     # Grab a frame

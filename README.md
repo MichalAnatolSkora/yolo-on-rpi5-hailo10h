@@ -36,7 +36,11 @@ The primary workflow — count vehicles crossing a line you draw on the camera i
    ```
    See [Evaluation & testing](#evaluation--testing).
 
+4. **(optional) Tune tracker parameters** — once you have a clip + ground truth, the tunable knobs (`confidence`, `min_hits`, `max_distance`, ...) live in [`tracker_config.json`](tracker_config.json). Edit by hand, or have the [`tune-tracker` Claude Code agent](tuning/README.md) do coordinate descent for you.
+
 On Raspberry Pi use `--source picam` (libcamera) or `--source /dev/video0` (USB). On macOS/Linux laptops add `--model yolo11n.pt` (local Ultralytics). Full options below.
+
+For setup mode you can also point `--source` at a recorded video (e.g. `--source raw_morning.mp4 --frame 200`) — handy for drawing lines on the same clip you'll later evaluate.
 
 **This repo also includes:** [object detection](#object-detection) without tracking, [security camera person line-crossing alerts](#security-camera-person-line-crossing-alert), and an experimental [gesture recognition](#gesture-recognition-wip) pipeline.
 
@@ -302,29 +306,46 @@ The recording is at the full capture resolution (`--input` / `--input-large`), n
 
 All camera/display/model flags from `run_yolo11.py` are also supported.
 
-| Flag | Default | Description |
-|---|---|---|
-| `--confidence` | `0.3` | Detection threshold (lower = more stable tracking) |
-| `--iou` | `0.45` | NMS IoU threshold |
-| `--max-disappeared` | `50` | Frames before a lost track is removed |
-| `--min-iou` | `0.15` | Minimum IoU overlap to match detection to track |
-| `--max-distance` | `200` | Max centroid distance fallback (catch fast movers) |
-| `--min-hits` | `3` | Frames a track must be seen before its crossings count — prevents ghost detections from inflating counts |
-| `--all-classes` | off | Track all detected objects, not just vehicles |
-| `--no-deduplicate` | off | Disable overlap dedup (on by default: suppresses same-class overlaps and cross-vehicle-class overlaps like "car + truck" on one box) |
-| `--buffer` | `0` | Buffer zone in pixels around each multi-line trip-wire (0 = exact crossing) |
+The tunable defaults below are loaded from [`tracker_config.json`](tracker_config.json) at the repo root — edit that file to change defaults for *all* runs. CLI flags below still override the JSON for one-off experiments. Full reference (with code links and tuning advice): [`tuning/PARAMETERS.md`](tuning/PARAMETERS.md).
 
-For tuning these in a reproducible way, use the [evaluation tooling](docs/evaluation.md).
+#### Detection — what YOLO emits
+
+- **`--confidence`** (config: `confidence`, default `0.3`) — How sure the model has to be that a box is really an object before it counts. `0.3` means "30% confidence or above". Lower → sees more (including blurry/distant objects but also more false detections); higher → stricter, fewer false positives but you may miss real ones.
+
+- **`--iou`** (config: `iou`, default `0.45`) — When YOLO emits two overlapping boxes for what is probably the same object, *non-max suppression* (NMS) keeps only the higher-confidence one and drops the other. This number is the overlap threshold for "probably the same object" — measured as IoU (intersection-over-union: shared area / total area, 0.0 to 1.0). `0.45` = drop the worse box if they overlap by 45% or more. Rarely worth tuning.
+
+- **`--all-classes`** (off by default) — Off: count only vehicles (car, motorcycle, bus, truck). On: count every COCO class YOLO detects (people, animals, etc.) — handy when testing indoors with a webcam.
+
+- **`--no-deduplicate`** (config: `deduplicate: false`, off by default — i.e. dedup is **on**) — YOLO sometimes emits two boxes for the same vehicle with *different class labels* (e.g. one says "car", the other says "truck" on the same SUV). Dedup removes these duplicates. Leave on. Flip off only to see what YOLO emits raw.
+
+#### Tracking — connecting detections across frames
+
+- **`--min-iou`** (config: `min_iou`, default `0.15`) — When a new detection arrives, the tracker tries to match it to an existing track by box overlap (IoU). Below this threshold the detection is treated as a *new* vehicle (new track ID). Higher → stricter matching, fewer ID swaps mid-track, but a real fast-moving vehicle may get a new ID every few frames (= overcounting).
+
+- **`--max-distance`** (config: `max_distance`, default `200`) — Fallback when IoU matching fails (boxes don't overlap at all because the vehicle moved too fast between frames). The tracker then matches by how far the box *center* moved, in pixels. Above this distance, no match. Higher → rescues fast vehicles; too high → a brand-new vehicle near a lost track inherits the old ID. **Not normalized to resolution** — `200` was tuned for 1024×768; halve for 640×480, double for 1920×1080.
+
+- **`--max-disappeared`** (config: `max_disappeared`, default `50`) — A track is being followed; the vehicle then briefly disappears (passes behind a tree, goes out of frame). This is how many frames the tracker holds onto the track before giving up and deleting it. At 30 fps, `50` ≈ 1.7 sec grace period. Higher → survives longer occlusions; too high → a different vehicle appearing later may get matched to the old track.
+
+#### Counting — when a track triggers a crossing
+
+- **`--min-hits`** (config: `min_hits`, default `3`) — A track must appear in at least this many frames before its line crossings start counting. Filters out 1- or 2-frame *ghost detections* (flickers from noise) that would otherwise inflate counts. **The biggest knob for fixing overcounting** — bump up (3 → 5 → 7) when actual count > expected.
+
+- **`--buffer`** (config: `buffer`, default `0`) — By default a vehicle is counted only when its centroid *exactly* crosses the geometric line. Set this to N pixels to count a vehicle when its centroid enters a strip of N pixels *around* the line. Useful when crossings are sometimes missed because the track briefly disappears right at the line. Most setups leave at `0`.
+
+#### Where to go next
+
+For systematic tuning against a ground-truth count, see [`tuning/`](tuning/README.md) — a Claude Code agent does coordinate descent over these knobs automatically. For reproducible regression testing across multiple clips, use [`evaluation/run_suite.py`](evaluation/run_suite.py).
 
 ## Evaluation & Testing
 
-Reproducible tracker tuning workflow: record a clip → manually count → replay offline → compare. The `evaluation/` folder has three scripts:
+Reproducible tracker tuning workflow: record a clip → manually count → replay offline → compare. The `evaluation/` folder has four scripts:
 
 - `download_clip.py` — grab clips from YouTube / Twitch (no camera trip needed)
 - `record_raw.py` — capture clean clips from your own camera
 - `evaluate.py` — replay through the tracker, compare to ground truth, exit 0/1 (PASS/FAIL) — usable as a CI regression check
+- `run_suite.py` — run `evaluate.py` over a whole folder of clips (`evaluation/tests/*.mp4` + `*.expected.json`) and detect regressions vs. the previous baseline
 
-Full docs, flag tables, verified livestream URLs, and the end-to-end tuning loop: [docs/evaluation.md](docs/evaluation.md).
+Full docs, flag tables, verified livestream URLs, and the end-to-end tuning loop: [docs/evaluation.md](docs/evaluation.md). For automatic *parameter* tuning (vs. testing) on a single clip, see [`tuning/`](tuning/README.md).
 
 ## Security Camera: Person Line-Crossing Alert
 
