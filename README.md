@@ -232,6 +232,12 @@ In setup mode:
 - **Esc** — cancel current in-progress line
 - **q** — quit without saving
 
+> **Want richer per-line metadata?** Two alternatives to the in-script `--setup` (which writes the simpler **v0**):
+> - [`tools/setup_lines.py`](tools/setup_lines.py) — terminal prompts + cv2 window. Writes **schema v1**. Zero extra dependencies.
+> - [`tools/visual_editor.py`](tools/visual_editor.py) — Streamlit web editor. Click two points to add a line, edit metadata in side panels, save v1. Run `pip install streamlit streamlit-image-coordinates pillow` then `streamlit run tools/visual_editor.py`.
+>
+> Both v0 and v1 configs are loaded transparently. To upgrade a v0 file to v1 by hand, see the diff snippet at the top of [`tools/setup_lines.py`](tools/setup_lines.py).
+
 **2. Run counting:**
 
 ```bash
@@ -259,6 +265,37 @@ The config file stores lines as normalized coordinates (0.0–1.0), so it works 
 Line names and directions (`both`, `positive`, `negative`) can be edited directly in the JSON. The arrow overlay on each line shows the "positive" crossing direction; per-line counts appear next to the line label.
 
 When `--config` is provided (or `./line_config.json` exists in the working directory — it is auto-loaded), the multi-line counter is used instead of the legacy `--line-y` horizontal line.
+
+#### How `direction` works
+
+A line has two endpoints, **p1** and **p2** (the order matters). The "positive" side of the line is **the left side when you stand at p1 looking towards p2**. The render shows this as a small arrow on the line — that arrow points to the positive side.
+
+```
+        ↑ arrow points here = "positive" side
+        |
+   p1 ●═══════════════● p2
+        |
+        ↓ "negative" side
+```
+
+When a tracked vehicle's centroid moves between frames, its position relative to the line is computed via the cross-product sign:
+
+- centroid was on **negative** side → now on **positive** side: counted as **"positive"** crossing
+- centroid was on **positive** side → now on **negative** side: counted as **"negative"** crossing
+
+The `direction` field in the JSON controls which crossings are *kept*:
+
+| Setting | Counts |
+|---|---|
+| `"both"` | both directions |
+| `"positive"` | only crossings going **to** the positive side (in the arrow's direction) |
+| `"negative"` | only crossings going **to** the negative side (against the arrow) |
+
+**Practical example.** A road with traffic going both ways. You draw `p1` on the left curb and `p2` on the right curb. Looking from p1 to p2, "positive" (the arrow) points *up* the page (north). Cars going north count as "positive"; cars going south count as "negative".
+
+Want to count only one direction? Set `"direction": "positive"` (or `"negative"`). To swap which way is "positive" without redrawing, just **swap p1 and p2** — the arrow flips.
+
+Per-line counts in the overlay show the *total* (positive + negative) regardless of the filter, but only filtered crossings are added.
 
 ### Legacy single horizontal line
 

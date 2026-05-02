@@ -41,6 +41,14 @@ Pull clips from YouTube / Twitch / Vimeo via yt-dlp. Alternative to `record_raw.
 ### 🟢 [`evaluation/run_suite.py`](evaluation/run_suite.py)
 Regression-test runner. Globs `evaluation/tests/*.mp4` + `*.expected.json`, runs `evaluate.py` on each, compares total absolute error to the previous baseline (`evaluation/results/latest.json`). Use before commits.
 
+## Tools
+
+### 🟢 [`tools/setup_lines.py`](tools/setup_lines.py)
+Standalone interactive line-config creator (terminal prompts + cv2 window). Writes **schema v1** with richer per-line metadata (name, description, classes, enabled flag) than the legacy in-script `--setup` (which writes v0). Both formats are loaded transparently. Docstring contains the v0→v1 hand-migration diff for upgrading existing configs without re-drawing.
+
+### 🟡 [`tools/visual_editor.py`](tools/visual_editor.py)
+Streamlit-based browser editor for line configs. Click two points on a video frame to define a line, edit per-line metadata (name, description, classes, direction, enabled, per-line webhook) in side panels, save as v1 JSON. Existing config (v0 or v1) is auto-loaded as a starting point. Lines are drawn as PIL overlays on the frame; uses `streamlit-image-coordinates` for clicks (replaced the canvas-based earlier draft, which was incompatible with Streamlit ≥1.34). Requires `pip install streamlit streamlit-image-coordinates pillow`.
+
 ## Install / setup
 
 ### 🟢 [`install_hailo.sh`](install_hailo.sh)

@@ -70,11 +70,11 @@ def _signal_handler(signum, frame):
 # Config
 # ---------------------------------------------------------------------------
 
-CURRENT_SCHEMA_VERSION = 0  # bump when the line config gains required fields
+CURRENT_SCHEMA_VERSION = 1  # bump when the line config gains required fields
 
 
 def load_config(path: str) -> dict:
-    """Load and validate a line config JSON file."""
+    """Load and validate a line config JSON file (v0 or v1)."""
     if not os.path.isfile(path):
         log.error("Config file not found: %s", path)
         sys.exit(1)
@@ -84,7 +84,8 @@ def load_config(path: str) -> dict:
     if version is None:
         log.warning(
             "%s has no schema_version — treating as legacy (v0). "
-            "Add \"schema_version\": 0 to silence this warning.", path,
+            "Add \"schema_version\": 0 to silence this warning, or hand-edit "
+            "to v1 (see tools/setup_lines.py docstring for the diff).", path,
         )
         version = 0
     if version > CURRENT_SCHEMA_VERSION:
@@ -97,12 +98,28 @@ def load_config(path: str) -> dict:
     if not lines:
         log.error("Config has no lines defined. Run --setup first.")
         sys.exit(1)
-    for i, line in enumerate(lines):
+
+    active = [ln for ln in lines if ln.get("enabled", True)]
+    skipped = len(lines) - len(active)
+    if skipped:
+        log.info("Skipped %d disabled line(s).", skipped)
+    if not active:
+        log.error("All lines are disabled in %s.", path)
+        sys.exit(1)
+    config["lines"] = active
+
+    for i, line in enumerate(active):
         for key in ("name", "p1", "p2"):
             if key not in line:
                 log.error("Line %d missing '%s' field.", i, key)
                 sys.exit(1)
         line.setdefault("direction", "both")
+
+    # v1 puts webhook_url under "alerts"; v0 has it at root. Normalize so the
+    # rest of the script can read config["webhook_url"] regardless.
+    if version >= 1 and "alerts" in config:
+        config.setdefault("webhook_url", config["alerts"].get("webhook_url", ""))
+
     return config
 
 
@@ -547,7 +564,16 @@ def run_setup(args: argparse.Namespace) -> None:
 
 def run(args: argparse.Namespace) -> None:
     config = load_config(args.config)
-    webhook_url = args.webhook_url or config.get("webhook_url") or None
+    global_webhook = args.webhook_url or config.get("webhook_url") or None
+
+    # Per-line webhook lookup: --webhook-url > line.webhook_url > global > MOCK.
+    # CLI flag is a hard override (used for testing), so it wins over per-line.
+    line_webhooks: dict[str, str | None] = {}
+    for ln in config["lines"]:
+        if args.webhook_url:
+            line_webhooks[ln["name"]] = args.webhook_url
+        else:
+            line_webhooks[ln["name"]] = ln.get("webhook_url") or global_webhook
 
     tracker = PersonTracker(
         max_disappeared=args.max_disappeared,
@@ -558,7 +584,12 @@ def run(args: argparse.Namespace) -> None:
 
     line_names = [l["name"] for l in config["lines"]]
     log.info("Loaded %d trip-wire line(s): %s (buffer=%dpx)", len(config["lines"]), ", ".join(line_names), args.buffer)
-    log.info("Webhook: %s", webhook_url or "MOCK")
+    distinct = {url or "MOCK" for url in line_webhooks.values()}
+    if len(distinct) == 1:
+        log.info("Webhook: %s", next(iter(distinct)))
+    else:
+        log.info("Webhooks (per line): %s",
+                 ", ".join(f"{n}={url or 'MOCK'}" for n, url in line_webhooks.items()))
 
     with create_session(args.model) as session:
         labels = load_labels(args.labels) if args.labels else session.labels
@@ -595,7 +626,7 @@ def run(args: argparse.Namespace) -> None:
 
                 for tid, line_name, direction in crossings:
                     det = tracked[tid]
-                    fire_alert(tid, direction, det[:4], line_name, webhook_url)
+                    fire_alert(tid, direction, det[:4], line_name, line_webhooks.get(line_name))
                     recently_crossed[tid] = line_name
 
                 frame = draw_overlay(frame, tracked, config["lines"], detector, recently_crossed)

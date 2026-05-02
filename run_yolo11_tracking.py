@@ -69,11 +69,11 @@ def _signal_handler(signum, frame):
 # Config
 # ---------------------------------------------------------------------------
 
-CURRENT_SCHEMA_VERSION = 0  # bump when the line config gains required fields
+CURRENT_SCHEMA_VERSION = 1  # bump when the line config gains required fields
 
 
 def load_config(path: str) -> dict:
-    """Load and validate a line config JSON file."""
+    """Load and validate a line config JSON file (v0 or v1)."""
     if not os.path.isfile(path):
         log.error("Config file not found: %s", path)
         sys.exit(1)
@@ -83,7 +83,8 @@ def load_config(path: str) -> dict:
     if version is None:
         log.warning(
             "%s has no schema_version — treating as legacy (v0). "
-            "Add \"schema_version\": 0 to silence this warning.", path,
+            "Add \"schema_version\": 0 to silence this warning, or hand-edit "
+            "to v1 (see tools/setup_lines.py docstring for the diff).", path,
         )
         version = 0
     if version > CURRENT_SCHEMA_VERSION:
@@ -96,12 +97,30 @@ def load_config(path: str) -> dict:
     if not lines:
         log.error("Config has no lines defined. Run --setup first.")
         sys.exit(1)
-    for i, line in enumerate(lines):
+
+    # Filter out disabled lines (v1 feature; v0 never sets enabled=False)
+    active = [ln for ln in lines if ln.get("enabled", True)]
+    skipped = len(lines) - len(active)
+    if skipped:
+        log.info("Skipped %d disabled line(s).", skipped)
+    if not active:
+        log.error("All lines are disabled in %s.", path)
+        sys.exit(1)
+    config["lines"] = active
+
+    for i, line in enumerate(active):
         for key in ("name", "p1", "p2"):
             if key not in line:
                 log.error("Line %d missing '%s' field.", i, key)
                 sys.exit(1)
         line.setdefault("direction", "both")
+
+    # v1 fields are accepted as data but per-line `classes` filtering is not
+    # wired into the counter yet — global --all-classes / VEHICLE_CLASS_IDS
+    # still applies. TODO: per-line class filtering.
+    if version >= 1 and any("classes" in ln for ln in active):
+        log.info("Note: v1 per-line `classes` field is read but not yet enforced "
+                 "by the tracker — global class filter still applies.")
     return config
 
 
